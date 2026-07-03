@@ -1,28 +1,33 @@
 import os
 import re
 
-def patch_bsp():
-    print("1. Neutralizing BSP Touch Panic...")
-    # Target the downloaded M5Stack vendor library
-    bsp_path = os.path.normpath("managed_components/espressif__m5stack_core_s3/m5stack_core_s3.c")
-
+def obliterate_cache_and_assert():
+    print("1. Obliterating the assert trap...")
+    bsp_path = os.path.normpath("components/espressif__m5stack_core_s3/m5stack_core_s3.c")
+    
     if os.path.exists(bsp_path):
         with open(bsp_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        # Find the aggressive error check and bypass it so the board ignores the touch failure
-        patched_content = re.sub(
-            r'ESP_ERROR_CHECK\(\s*bsp_touch_new\(\s*NULL\s*,\s*&tp\s*\)\s*\);',
-            r'/* ESP_ERROR_CHECK bypassed for IDF v5.3 */ bsp_touch_new(NULL, &tp);',
+        # Catch the assert regardless of hidden line breaks or spaces
+        patched = re.sub(
+            r'assert\s*\(\s*disp_indev\s*=\s*bsp_display_indev_init\s*\(\s*disp\s*\)\s*\)\s*;',
+            r'disp_indev = NULL; // ASSERT OBLITERATED',
             content
         )
 
         with open(bsp_path, 'w', encoding='utf-8') as f:
-            f.write(patched_content)
-            
-        print(" -> Success: Touch panic safely bypassed.")
+            f.write(patched)
+        print(" -> Success: Assert safely neutralized.")
     else:
-        print(" -> ERROR: M5Stack BSP file not found.")
+        print(" -> ERROR: m5stack_core_s3.c not found.")
+
+    print("\n2. Poisoning the ccache to force a real compile...")
+    cmake_path = os.path.normpath("components/espressif__m5stack_core_s3/CMakeLists.txt")
+    if os.path.exists(cmake_path):
+        with open(cmake_path, 'a', encoding='utf-8') as f:
+            f.write("\n# FORCING REBUILD\n")
+        print(" -> Success: Compiler cache legally broken.")
 
 if __name__ == "__main__":
-    patch_bsp()
+    obliterate_cache_and_assert()
