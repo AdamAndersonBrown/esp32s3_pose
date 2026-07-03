@@ -1,5 +1,5 @@
 idf_component_register(SRCS
-    "core/app_main.c"
+    "core/app_main.cpp"
     "hardware/display_manager.c"
     "hardware/display_cube.c"
     "ml/eskf_fusion.c"
