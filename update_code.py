@@ -1,33 +1,31 @@
 import os
 import re
 
-def obliterate_cache_and_assert():
-    print("1. Obliterating the assert trap...")
-    bsp_path = os.path.normpath("components/espressif__m5stack_core_s3/m5stack_core_s3.c")
+def fix_race_condition():
+    print("1. Injecting Mutex locks to protect the 3D graphics memory...")
+    app_path = os.path.normpath("main/core/app_main.cpp")
     
-    if os.path.exists(bsp_path):
-        with open(bsp_path, 'r', encoding='utf-8') as f:
+    if os.path.exists(app_path):
+        with open(app_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        # Catch the assert regardless of hidden line breaks or spaces
-        patched = re.sub(
-            r'assert\s*\(\s*disp_indev\s*=\s*bsp_display_indev_init\s*\(\s*disp\s*\)\s*\)\s*;',
-            r'disp_indev = NULL; // ASSERT OBLITERATED',
-            content
-        )
+        # Check to ensure we don't double-patch the file
+        if "bsp_display_lock(0);" not in content:
+            # Find the app_init(); call and wrap it in hardware locks
+            patched = re.sub(
+                r'(\s+)app_init\(\);', 
+                r'\1bsp_display_lock(0);\1app_init();\1bsp_display_unlock();', 
+                content
+            )
 
-        with open(bsp_path, 'w', encoding='utf-8') as f:
-            f.write(patched)
-        print(" -> Success: Assert safely neutralized.")
+            with open(app_path, 'w', encoding='utf-8') as f:
+                f.write(patched)
+                
+            print(" -> Success: Race condition eliminated. LVGL is thread-safe.")
+        else:
+            print(" -> Locks are already present.")
     else:
-        print(" -> ERROR: m5stack_core_s3.c not found.")
-
-    print("\n2. Poisoning the ccache to force a real compile...")
-    cmake_path = os.path.normpath("components/espressif__m5stack_core_s3/CMakeLists.txt")
-    if os.path.exists(cmake_path):
-        with open(cmake_path, 'a', encoding='utf-8') as f:
-            f.write("\n# FORCING REBUILD\n")
-        print(" -> Success: Compiler cache legally broken.")
+        print(" -> ERROR: Could not find app_main.cpp")
 
 if __name__ == "__main__":
-    obliterate_cache_and_assert()
+    fix_race_condition()

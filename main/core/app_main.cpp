@@ -423,7 +423,9 @@ void app_main(void)
     display = bsp_display_start();
     init_perspective_matrix(perspective_matrix);
     init_3d_matrix_struct(&image);
+    bsp_display_lock(0);
     app_init();
+    bsp_display_unlock();
 
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 
