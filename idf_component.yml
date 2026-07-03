@@ -1,4 +1,5 @@
 dependencies:
-  espressif/esp_lcd_ili9341: "*"
-  espressif/esp-dsp: "^1.4.9"
-  espressif/qrcode: "*"
+  espressif/esp_lcd_ili9341: '*'
+  espressif/esp-dsp: ^1.4.9
+  espressif/qrcode: '*'
+  espressif/m5stack_core_s3: '*'

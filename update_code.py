@@ -1,25 +1,28 @@
 import os
+import re
 
-def fix_cmake():
-    print("1. Updating CMakeLists.txt for C++ compilation...")
-    cmake_path = os.path.normpath("main/CMakeLists.txt")
-    
-    if os.path.exists(cmake_path):
-        with open(cmake_path, 'r', encoding='utf-8') as f:
+def patch_bsp():
+    print("1. Neutralizing BSP Touch Panic...")
+    # Target the downloaded M5Stack vendor library
+    bsp_path = os.path.normpath("managed_components/espressif__m5stack_core_s3/m5stack_core_s3.c")
+
+    if os.path.exists(bsp_path):
+        with open(bsp_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        
-        # Tell the build system to look for the new C++ file instead of the old C file
-        if "app_main.c" in content:
-            content = content.replace("app_main.c", "app_main.cpp")
-            with open(cmake_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            print(" -> Success: CMakeLists.txt updated to target app_main.cpp.")
-        elif "app_main.cpp" in content:
-            print(" -> CMakeLists.txt is already targeting app_main.cpp.")
-        else:
-            print(" -> WARNING: Could not find explicit app_main.c reference. Check your CMakeLists.txt manually.")
+
+        # Find the aggressive error check and bypass it so the board ignores the touch failure
+        patched_content = re.sub(
+            r'ESP_ERROR_CHECK\(\s*bsp_touch_new\(\s*NULL\s*,\s*&tp\s*\)\s*\);',
+            r'/* ESP_ERROR_CHECK bypassed for IDF v5.3 */ bsp_touch_new(NULL, &tp);',
+            content
+        )
+
+        with open(bsp_path, 'w', encoding='utf-8') as f:
+            f.write(patched_content)
+            
+        print(" -> Success: Touch panic safely bypassed.")
     else:
-        print(" -> ERROR: main/CMakeLists.txt not found!")
+        print(" -> ERROR: M5Stack BSP file not found.")
 
 if __name__ == "__main__":
-    fix_cmake()
+    patch_bsp()

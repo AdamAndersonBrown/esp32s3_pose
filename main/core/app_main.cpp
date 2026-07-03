@@ -1,3 +1,4 @@
+#include "driver/i2c.h"
 /*
  * SPDX-FileCopyrightText: 2025 Espressif Systems (Shanghai) CO LTD
  *
@@ -59,14 +60,13 @@ lv_obj_t **objs;
 lv_point_precise_t *points;
 
 
-static i2c_master_bus_handle_t i2c_handle;
-static i2c_master_dev_handle_t bmi270_h = NULL;
+static 
 #define BSP_BMI270_ADDR     0x69
 #define BSP_BMM150_ADDR     0x10
 
 // i2c read/write buffers
-static uint8_t i2c_read_buffer[32];
-static uint8_t i2c_write_buffer[32];
+uint8_t i2c_read_buffer[32];
+uint8_t i2c_write_buffer[32];
 
 // Definitions for bmi270 registers
 #define BMI270_IF_CONF 0x6B  // Auxiliary I2C
@@ -101,13 +101,13 @@ esp_err_t read_bmm150_data(uint8_t addr, uint8_t *data, int length)
 {
     i2c_write_buffer[0] = BMI270_AUX_READ_ADDR;
     i2c_write_buffer[1] = addr;
-    esp_err_t err = i2c_master_transmit(bmi270_h, i2c_write_buffer, 2, 1000);
+    esp_err_t err = i2c_master_write_to_device(I2C_NUM_0, 0x69, i2c_write_buffer, 2, 1000);
 
     i2c_write_buffer[0] = BMI270_AUX_STATUS;
-    err = i2c_master_transmit_receive(bmi270_h, i2c_write_buffer, 1, data, length, 1000);
+    err = i2c_master_write_read_device(I2C_NUM_0, 0x69, i2c_write_buffer, 1, data, length, 1000);
 
     i2c_write_buffer[0] = BMI270_AUX_DATA0;
-    err = i2c_master_transmit_receive(bmi270_h, i2c_write_buffer, 1, data, length, 1000);
+    err = i2c_master_write_read_device(I2C_NUM_0, 0x69, i2c_write_buffer, 1, data, length, 1000);
     return err;
 }
 
@@ -115,11 +115,11 @@ esp_err_t write_bmm150_data(uint8_t addr, uint8_t *data, int length)
 {
     i2c_write_buffer[0] = BMI270_AUX_WRITE_DATA;
     i2c_write_buffer[1] = data[0];
-    esp_err_t err = i2c_master_transmit(bmi270_h, i2c_write_buffer, 2, 1000);
+    esp_err_t err = i2c_master_write_to_device(I2C_NUM_0, 0x69, i2c_write_buffer, 2, 1000);
 
     i2c_write_buffer[0] = BMI270_AUX_WRITE_ADDR;
     i2c_write_buffer[1] = addr;
-    err = i2c_master_transmit(bmi270_h, i2c_write_buffer, 2, 1000);
+    err = i2c_master_write_to_device(I2C_NUM_0, 0x69, i2c_write_buffer, 2, 1000);
 
     return err;
 }
@@ -131,7 +131,7 @@ esp_err_t write_bmi270_data(uint8_t addr, uint8_t *data, int length)
         for (size_t i = 0; i < length; i++) {
             i2c_write_buffer[1 + i] = data[i];
         }
-        esp_err_t err = i2c_master_transmit(bmi270_h, i2c_write_buffer, 1 + length, 1000);
+        esp_err_t err = i2c_master_write_to_device(I2C_NUM_0, 0x69, i2c_write_buffer, 1 + length, 1000);
         return err;
     }
 
@@ -141,7 +141,7 @@ esp_err_t write_bmi270_data(uint8_t addr, uint8_t *data, int length)
     }
     temp_data[0] = addr;
 
-    esp_err_t err = i2c_master_transmit(bmi270_h, temp_data, 1 + length, 1000);
+    esp_err_t err = i2c_master_write_to_device(I2C_NUM_0, 0x69, temp_data, 1 + length, 1000);
     free(temp_data);
     return err;
 }
@@ -150,7 +150,7 @@ esp_err_t read_bmi270_data(uint8_t addr, uint8_t *data, int length)
 {
 
     i2c_write_buffer[0] = addr;
-    esp_err_t err = i2c_master_transmit_receive(bmi270_h, i2c_write_buffer, 1, data, length, 1000);
+    esp_err_t err = i2c_master_write_read_device(I2C_NUM_0, 0x69, i2c_write_buffer, 1, data, length, 1000);
     return err;
 }
 
@@ -159,7 +159,7 @@ esp_err_t write_bmi270_reg(uint8_t addr, uint8_t data)
 
     i2c_write_buffer[0] = addr;
     i2c_write_buffer[1] = data;
-    esp_err_t err = i2c_master_transmit(bmi270_h, i2c_write_buffer, 2, 1000);
+    esp_err_t err = i2c_master_write_to_device(I2C_NUM_0, 0x69, i2c_write_buffer, 2, 1000);
     return err;
 }
 
@@ -167,7 +167,7 @@ uint8_t read_bmi270_reg(uint8_t addr, esp_err_t *err)
 {
 
     i2c_write_buffer[0] = addr;
-    *err = i2c_master_transmit_receive(bmi270_h, i2c_write_buffer, 1, &i2c_write_buffer[16], 1, 1000);
+    *err = i2c_master_write_read_device(I2C_NUM_0, 0x69, i2c_write_buffer, 1, &i2c_write_buffer[16], 1, 1000);
     return i2c_write_buffer[16];
 }
 
@@ -210,40 +210,36 @@ static void app_init(void)
     }
 
     // Init the bmi270 and bmm150 chips
-    esp_err_t err = i2c_master_get_bus_handle(CONFIG_BSP_I2C_NUM, &i2c_handle);
+    esp_err_t err = ESP_OK;
 
-    const i2c_device_config_t bmi270_config = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = BSP_BMI270_ADDR,
-        .scl_speed_hz = 400000,
-    };
-    err = i2c_master_bus_add_device(i2c_handle, &bmi270_config, &bmi270_h);
+    
+    
     vTaskDelay(10);
     // Read chip ID to check the connection
     i2c_write_buffer[0] = 0x00;
-    err = i2c_master_transmit_receive(bmi270_h, i2c_write_buffer, 1, i2c_read_buffer, 1, 1000);
+    err = i2c_master_write_read_device(I2C_NUM_0, 0x69, i2c_write_buffer, 1, i2c_read_buffer, 1, 1000);
     ESP_LOGI(TAG, "bmi270 ChipID = 0x%2.2x (should be 0x24), err = %2.2x", i2c_read_buffer[0], err);
 
     i2c_write_buffer[0] = BMI270_IF_CONF;
     i2c_write_buffer[1] = 0x20;
-    err = i2c_master_transmit(bmi270_h, i2c_write_buffer, 2, 1000);
+    err = i2c_master_write_to_device(I2C_NUM_0, 0x69, i2c_write_buffer, 2, 1000);
 
     i2c_write_buffer[0] = BMI270_IF_CONF;
-    err = i2c_master_transmit_receive(bmi270_h, i2c_write_buffer, 1, i2c_read_buffer, 1, 1000);
+    err = i2c_master_write_read_device(I2C_NUM_0, 0x69, i2c_write_buffer, 1, i2c_read_buffer, 1, 1000);
 
     i2c_write_buffer[0] = BMI270_PWR_CTRL;
     i2c_write_buffer[1] = 0x0f;
-    err = i2c_master_transmit(bmi270_h, i2c_write_buffer, 2, 1000);
+    err = i2c_master_write_to_device(I2C_NUM_0, 0x69, i2c_write_buffer, 2, 1000);
 
     i2c_write_buffer[0] = BMI270_PWR_CTRL;
-    err = i2c_master_transmit_receive(bmi270_h, i2c_write_buffer, 1, i2c_read_buffer, 1, 1000);
+    err = i2c_master_write_read_device(I2C_NUM_0, 0x69, i2c_write_buffer, 1, i2c_read_buffer, 1, 1000);
 
     i2c_write_buffer[0] = BMI270_AUX_IF_CONFIG;
     i2c_write_buffer[1] = 0x80;
-    err = i2c_master_transmit(bmi270_h, i2c_write_buffer, 2, 1000);
+    err = i2c_master_write_to_device(I2C_NUM_0, 0x69, i2c_write_buffer, 2, 1000);
 
     i2c_write_buffer[0] = BMI270_AUX_IF_CONFIG;
-    err = i2c_master_transmit_receive(bmi270_h, i2c_write_buffer, 1, i2c_read_buffer, 1, 1000);
+    err = i2c_master_write_read_device(I2C_NUM_0, 0x69, i2c_write_buffer, 1, i2c_read_buffer, 1, 1000);
     // vTaskDelay(1);
 
     err = read_bmm150_data(BMM150_REG_POWER_CONTROL, i2c_read_buffer, 1);
@@ -280,19 +276,19 @@ static void app_init(void)
 
     i2c_write_buffer[0] = BMI270_IF_CONF;
     i2c_write_buffer[1] = 0x00;
-    err = i2c_master_transmit(bmi270_h, i2c_write_buffer, 2, 1000);
+    err = i2c_master_write_to_device(I2C_NUM_0, 0x69, i2c_write_buffer, 2, 1000);
 
     i2c_write_buffer[0] = BMI270_AUX_READ_ADDR;
     i2c_write_buffer[1] = BMM150_DATA0;
-    err = i2c_master_transmit(bmi270_h, i2c_write_buffer, 2, 1000);
+    err = i2c_master_write_to_device(I2C_NUM_0, 0x69, i2c_write_buffer, 2, 1000);
 
     i2c_write_buffer[0] = BMI270_IF_CONF;
     i2c_write_buffer[1] = 0x20;
-    err = i2c_master_transmit(bmi270_h, i2c_write_buffer, 2, 1000);
+    err = i2c_master_write_to_device(I2C_NUM_0, 0x69, i2c_write_buffer, 2, 1000);
 
     i2c_write_buffer[0] = BMI270_AUX_IF_CONFIG;
     i2c_write_buffer[1] = 0x03;
-    err = i2c_master_transmit(bmi270_h, i2c_write_buffer, 2, 1000);
+    err = i2c_master_write_to_device(I2C_NUM_0, 0x69, i2c_write_buffer, 2, 1000);
 
     ESP_LOGI(TAG, "bmi270 initialization is done");
 }

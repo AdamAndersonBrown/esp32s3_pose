@@ -1,5 +1,7 @@
+## IDF Component Manager Manifest File
+description: ESP-DSP azure board application 3d graphics
 dependencies:
-  espressif/esp_lcd_ili9341: "*"
-  espressif/esp-tflite-micro: "*"
-  espressif/qrcode: "*"
-  espressif/esp-dsp: "^1.4.9"
+  espressif/esp-dsp:
+    version: '*'
+
+  espressif/m5stack_core_s3: '*'
