@@ -1,0 +1,13 @@
+# ESP-IDF
+build/
+dependencies.lock
+managed_components/
+sdkconfig.old
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# ML Output
+*.tflite

@@ -1,0 +1,5 @@
+dependencies:
+  espressif/esp_lcd_ili9341: "*"
+  espressif/esp-tflite-micro: "*"
+  espressif/qrcode: "*"
+  espressif/esp-dsp: "^1.4.9"
