@@ -65,8 +65,8 @@ static
 #define BSP_BMM150_ADDR     0x10
 
 // i2c read/write buffers
-uint8_t i2c_read_buffer[32];
-uint8_t i2c_write_buffer[32];
+uint8_t i2c_read_buffer[1024];
+uint8_t i2c_write_buffer[1024];
 
 // Definitions for bmi270 registers
 #define BMI270_IF_CONF 0x6B  // Auxiliary I2C
@@ -141,7 +141,9 @@ esp_err_t write_bmi270_data(uint8_t addr, uint8_t *data, int length)
     }
     temp_data[0] = addr;
 
-    esp_err_t err = i2c_master_write_to_device(I2C_NUM_1, 0x69, temp_data, 1 + length, 1000);
+    
+        esp_err_t err = i2c_master_write_to_device(I2C_NUM_1, 0x69, temp_data, 1 + length, 1000);
+        
     free(temp_data);
     return err;
 }
@@ -344,6 +346,37 @@ static void draw_3d_image_task(void *arg)
     float magn_norm = 1;
     while (1) {
 
+        // --- 9-DOF RAW TELEMETRY ---
+        {
+            static int telemetry_tick = 0;
+            if (telemetry_tick++ % 20 == 0) {
+                // 1. Read Accel & Gyro from BMI270 (Registers 0x0C to 0x17)
+                uint8_t raw_imu[12] = {0};
+                uint8_t imu_reg = 0x0C; 
+                i2c_master_write_read_device(I2C_NUM_1, 0x69, &imu_reg, 1, raw_imu, 12, 1000);
+                
+                int16_t ax = (raw_imu[1] << 8) | raw_imu[0];
+                int16_t ay = (raw_imu[3] << 8) | raw_imu[2];
+                int16_t az = (raw_imu[5] << 8) | raw_imu[4];
+                int16_t gx = (raw_imu[7] << 8) | raw_imu[6];
+                int16_t gy = (raw_imu[9] << 8) | raw_imu[8];
+                int16_t gz = (raw_imu[11] << 8) | raw_imu[10];
+
+                // 2. Read Magnetometer from BMM150 (Registers 0x42 to 0x47)
+                uint8_t raw_mag[8] = {0};
+                uint8_t mag_reg = 0x42;
+                i2c_master_write_read_device(I2C_NUM_1, 0x10, &mag_reg, 1, raw_mag, 8, 1000);
+                
+                int16_t mx = (raw_mag[1] << 8) | raw_mag[0];
+                int16_t my = (raw_mag[3] << 8) | raw_mag[2];
+                int16_t mz = (raw_mag[5] << 8) | raw_mag[4];
+
+                ESP_LOGW("9-DOF", "ACC[%d, %d, %d] GYR[%d, %d, %d] MAG[%d, %d, %d]", ax, ay, az, gx, gy, gz, mx, my, mz);
+            }
+        }
+        // ------------------------------
+
+
         esp_err_t err;
 
         // Calculate dt for kalman filter
@@ -433,8 +466,15 @@ void app_main(void)
         i2c_conf.scl_pullup_en = true;
         i2c_conf.master.clk_speed = 400000; // 400kHz Fast Mode
         
+        i2c_driver_delete(I2C_NUM_1);
         i2c_param_config(I2C_NUM_1, &i2c_conf);
         i2c_driver_install(I2C_NUM_1, i2c_conf.mode, 0, 0, 0);
+
+        // --- BMI270 SILICON RESET ---
+        uint8_t reset_cmd[2] = {0x7E, 0xB6};
+        i2c_master_write_to_device(I2C_NUM_1, 0x69, reset_cmd, 2, 1000);
+        vTaskDelay(pdMS_TO_TICKS(50)); // 50ms absolute boot delay to clear silicon
+        // ----------------------------
         // -------------------------------------------------------------
 
         bsp_display_lock(0);
