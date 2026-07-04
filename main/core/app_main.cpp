@@ -113,15 +113,18 @@ esp_err_t read_bmm150_data(uint8_t addr, uint8_t *data, int length)
 
 esp_err_t write_bmm150_data(uint8_t addr, uint8_t *data, int length)
 {
-    // ARCHITECT FIX: Set target address FIRST (0x4E)
-    i2c_write_buffer[0] = BMI270_AUX_WRITE_ADDR;
-    i2c_write_buffer[1] = addr;
-    esp_err_t err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
-
-    // ARCHITECT FIX: Push data payload SECOND (0x4F) to trigger the hardware transaction
+    // ARCHITECT FIX (REVERSION): Datasheet mandates data must be stored in 0x4F BEFORE writing to 0x4E.
+    // Writing to AUX_WR_ADDR (0x4E) triggers the actual I2C transaction on the auxiliary bus.
     i2c_write_buffer[0] = BMI270_AUX_WRITE_DATA;
     i2c_write_buffer[1] = data[0];
+    esp_err_t err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
+
+    i2c_write_buffer[0] = BMI270_AUX_WRITE_ADDR;
+    i2c_write_buffer[1] = addr;
     err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
+
+    // The BMI270 requires time to process the auxiliary I2C write across the physical traces.
+    vTaskDelay(pdMS_TO_TICKS(5));
 
     return err;
 }
@@ -238,28 +241,7 @@ static void app_init(void)
     i2c_write_buffer[0] = BMI270_PWR_CTRL;
     err = i2c_master_write_read_device(I2C_NUM_1, 0x69, i2c_write_buffer, 1, i2c_read_buffer, 1, 1000);
 
-    // ARCHITECT FIX: Set Target I2C Device Address (0x10 << 1 = 0x20)
-    write_bmi270_reg(BMI270_AUX_DEV_ID, 0x20);
-
-    // Enter Setup Mode
-    write_bmi270_reg(BMI270_AUX_IF_CONFIG, 0x80);
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    // Wake BMM150 from Suspend to Sleep (Power Control = 1)
-    uint8_t pwr_ctrl = 0x01;
-    write_bmm150_data(BMM150_REG_POWER_CONTROL, &pwr_ctrl, 1);
-    vTaskDelay(pdMS_TO_TICKS(15)); // Strict delay for oscillators
-
-    // Configure High-Accuracy Repetitions (XY: 47 -> 0x17, Z: 83 -> 0x52)
-    uint8_t rep_xy = 0x17;
-    write_bmm150_data(0x51, &rep_xy, 1);
-    uint8_t rep_z = 0x52;
-    write_bmm150_data(0x52, &rep_z, 1);
-
-    // Set Normal Mode (Operation Mode = 0x00)
-    uint8_t op_mode = 0x00;
-    write_bmm150_data(0x4c, &op_mode, 1);
-    vTaskDelay(pdMS_TO_TICKS(15));
+    // ARCHITECT FIX: Deferred BMM150 setup to after microcode load.
 
     write_bmi270_reg(BMI270_PWR_CONF, 0);
     ESP_LOGI(TAG, "bmi270 status = %2.2x", read_bmi270_reg(BMI270_INTERNAL_STATUS, &err));
@@ -278,23 +260,41 @@ static void app_init(void)
     write_bmi270_reg(BMI270_ACC_RANGE, 0x03);
     write_bmi270_reg(BMI270_GYR_RANGE, 0x00);
 
-    i2c_write_buffer[0] = BMI270_IF_CONF;
-    i2c_write_buffer[1] = 0x00;
-    err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
+    // --- ARCHITECT FIX: BMM150 SETUP (AFTER MICROCODE LOAD) ---
+    // Ensure auxiliary interface is ENABLED during manual setup (Bit 5 = 1)
+    write_bmi270_reg(BMI270_IF_CONF, 0x20);
+    vTaskDelay(pdMS_TO_TICKS(5));
 
-    i2c_write_buffer[0] = BMI270_AUX_READ_ADDR;
-    i2c_write_buffer[1] = BMM150_DATA0;
-    err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
+    // 1. Set Target I2C Device Address (0x10 << 1 = 0x20)
+    write_bmi270_reg(BMI270_AUX_DEV_ID, 0x20);
 
-    i2c_write_buffer[0] = BMI270_IF_CONF;
-    i2c_write_buffer[1] = 0x20;
-    err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
+    // 2. Enter Setup Mode (manual auxiliary routing)
+    write_bmi270_reg(BMI270_AUX_IF_CONFIG, 0x80);
+    vTaskDelay(pdMS_TO_TICKS(10));
 
-    i2c_write_buffer[0] = BMI270_AUX_IF_CONFIG;
-    i2c_write_buffer[1] = 0x03;
-    err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
+    // 3. Wake BMM150 from Suspend to Sleep (Power Control = 1)
+    uint8_t pwr_ctrl = 0x01;
+    write_bmm150_data(BMM150_REG_POWER_CONTROL, &pwr_ctrl, 1);
+    vTaskDelay(pdMS_TO_TICKS(10)); // Oscillator stabilization
 
-    ESP_LOGI(TAG, "bmi270 initialization is done");
+    // 4. Configure High-Accuracy Repetitions (XY: 47 -> 0x17, Z: 83 -> 0x52)
+    uint8_t rep_xy = 0x17; write_bmm150_data(0x51, &rep_xy, 1);
+    uint8_t rep_z = 0x52; write_bmm150_data(0x52, &rep_z, 1);
+
+    // 5. Set Normal Mode (Operation Mode = 0x00)
+    uint8_t op_mode = 0x00; write_bmm150_data(0x4C, &op_mode, 1);
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    // 6. Set Read Target to BMM150_DATA0 (0x42)
+    // "It is recommended to disable the auxiliary sensor interface before setting up AUX_RD_ADDR"
+    write_bmi270_reg(BMI270_IF_CONF, 0x00);
+    write_bmi270_reg(BMI270_AUX_READ_ADDR, BMM150_DATA0);
+    write_bmi270_reg(BMI270_IF_CONF, 0x20); // Re-enable
+
+    // 7. Transition to Data Mode (Auto-polling bursts of 8 bytes)
+    write_bmi270_reg(BMI270_AUX_IF_CONFIG, 0x03);
+
+    ESP_LOGI(TAG, "bmi270 & bmm150 initialization is done");
 }
 
 /**
@@ -377,6 +377,13 @@ static void draw_3d_image_task(void *arg)
             accel[i] = sensors_data[4 + i];
             gyro[i] = sensors_data[7 + i];
             /* code */
+        }
+
+        // ARCHITECT FIX: Throttled telemetry logging (every 50 frames) to prevent UART buffer overflow and CPU starvation
+        static uint32_t telemetry_counter = 0;
+        if (telemetry_counter++ % 50 == 0) {
+            ESP_LOGI(TAG, "9-DoF Telemetry -> Acc: [%.0f, %.0f, %.0f] | Gyr: [%.0f, %.0f, %.0f] | Mag: [%.0f, %.0f, %.0f]",
+                     accel[0], accel[1], accel[2], gyro[0], gyro[1], gyro[2], magn[0], magn[1], magn[2]);
         }
 
         // We have to apply this because initial direction of sensors
