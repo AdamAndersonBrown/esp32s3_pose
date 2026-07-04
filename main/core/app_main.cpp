@@ -47,44 +47,26 @@ const float m5_cube_vectors_3d[CUBE_POINTS][MATRIX_SIZE] =
  *
  * @param image: 3d image structure
  */
-#define COMPASS_POINTS 14
-#define COMPASS_EDGES 16
+#define JET_POINTS 6
+#define JET_EDGES 11
 
-const float compass_vectors_3d[COMPASS_POINTS][MATRIX_SIZE] = {
-    // Cube Chassis (0-7)
-    {-M5_CUBE_SIDE, -M5_CUBE_SIDE, -M5_CUBE_SIDE, 1},
-    {-M5_CUBE_SIDE, -M5_CUBE_SIDE,  M5_CUBE_SIDE, 1},
-    {-M5_CUBE_SIDE,  M5_CUBE_SIDE, -M5_CUBE_SIDE, 1},
-    {-M5_CUBE_SIDE,  M5_CUBE_SIDE,  M5_CUBE_SIDE, 1},
-    { M5_CUBE_SIDE, -M5_CUBE_SIDE, -M5_CUBE_SIDE, 1},
-    { M5_CUBE_SIDE, -M5_CUBE_SIDE,  M5_CUBE_SIDE, 1},
-    { M5_CUBE_SIDE,  M5_CUBE_SIDE, -M5_CUBE_SIDE, 1},
-    { M5_CUBE_SIDE,  M5_CUBE_SIDE,  M5_CUBE_SIDE, 1},
-    // Earth Tangent Plane (NESW) (8-13)
-    { M5_CUBE_SIDE*1.5f, 0, 0, 1}, // 8: North (X+)
-    {-M5_CUBE_SIDE*1.5f, 0, 0, 1}, // 9: South (X-)
-    { 0, M5_CUBE_SIDE*1.5f, 0, 1}, // 10: East (Y+)
-    { 0,-M5_CUBE_SIDE*1.5f, 0, 1}, // 11: West (Y-)
-    { M5_CUBE_SIDE*1.1f, M5_CUBE_SIDE*0.3f, 0, 1}, // 12: North Arrowhead
-    { M5_CUBE_SIDE*1.1f,-M5_CUBE_SIDE*0.3f, 0, 1}  // 13: North Arrowhead
+const float jet_vectors_3d[JET_POINTS][MATRIX_SIZE] = {
+    // Defined in the True Earth Frame (North=X, East=Y, Down=Z)
+    {  80,   0,   0, 1}, // 0: Nose (North, +X)
+    {-40,   60,   0, 1}, // 1: Right Wing (East, +Y)
+    {-40,  -60,   0, 1}, // 2: Left Wing (West, -Y)
+    {-60,    0,   0, 1}, // 3: Tail Base (South, -X)
+    {-70,    0, -40, 1}, // 4: Tail Fin (Up, -Z)
+    {-20,    0,  20, 1}  // 5: Belly (Down, +Z)
 };
 
-const uint8_t compass_line_begin[COMPASS_EDGES] = {
-    3, 3, 5, 5, 2, 2, 4, 4, 3, 7, 1, 5, // 12 cube edges
-    8, 10,  // N-S axis, E-W axis
-    8, 8    // Arrow head
-};
-const uint8_t compass_line_end[COMPASS_EDGES] = {
-    1, 7, 7, 1, 0, 6, 6, 0, 2, 6, 0, 4, // 12 cube edges
-    9, 11,  // N-S axis, E-W axis
-    12, 13  // Arrow head
-};
+const uint8_t jet_line_begin[JET_EDGES] = {0, 0, 1, 2, 3, 1, 2, 0, 1, 2, 3};
+const uint8_t jet_line_end[JET_EDGES]   = {1, 2, 3, 3, 4, 4, 4, 5, 5, 5, 5};
 
 static void init_3d_matrix_struct(image_3d_matrix_t *image)
 {
-    // ARCHITECT FIX: Overriding primitive cube with full NESW Earth Tangent Compass Plane
-    image->matrix = compass_vectors_3d;
-    image->matrix_len = COMPASS_POINTS;
+    image->matrix = jet_vectors_3d;
+    image->matrix_len = JET_POINTS;
 }
 
 lv_style_t style_red;
@@ -247,20 +229,15 @@ static void app_init(void)
     lv_style_set_line_width(&style_green, 12);
     lv_style_set_line_rounded(&style_green, true);
 
-    objs = (lv_obj_t **)malloc(COMPASS_EDGES * sizeof(lv_obj_t *));
-    points = (lv_point_precise_t *)malloc(COMPASS_EDGES * 2 * sizeof(lv_point_precise_t));
+    objs = (lv_obj_t **)malloc(JET_EDGES * sizeof(lv_obj_t *));
+    points = (lv_point_precise_t *)malloc(JET_EDGES * 2 * sizeof(lv_point_precise_t));
 
-    for (uint8_t i = 0; i < 6; i++) {
+    for (uint8_t i = 0; i < JET_EDGES; i++) {
         objs[i] = lv_line_create(lv_screen_active());
-        lv_obj_add_style(objs[i], &style_red, 0);
-    }
-    for (uint8_t i = 6; i < 12; i++) {
-        objs[i] = lv_line_create(lv_screen_active());
-        lv_obj_add_style(objs[i], &style_blue, 0);
-    }
-    for (uint8_t i = 12; i < COMPASS_EDGES; i++) {
-        objs[i] = lv_line_create(lv_screen_active());
-        lv_obj_add_style(objs[i], &style_green, 0);
+        // Color code: Wings/Fuselage = Red, Tail Fin = Blue, Belly = Green
+        if (i >= 7) lv_obj_add_style(objs[i], &style_green, 0);
+        else if (i >= 4) lv_obj_add_style(objs[i], &style_blue, 0);
+        else lv_obj_add_style(objs[i], &style_red, 0);
     }
 
     // Init the bmi270 and bmm150 chips
@@ -358,11 +335,14 @@ static void display_3d_image(dspm::Mat projected_image)
     // Cube edges, connecting transformed 3D cube points are connected with lines here
     bsp_display_lock(10000);
     // ARCHITECT FIX: Render COMPASS_EDGES dynamically instead of CUBE_EDGES
-    for (uint8_t i = 0; i < COMPASS_EDGES; i++) {
-        points[i * 2 + 0].x = (int16_t)projected_image(compass_line_begin[i], 0);
-        points[i * 2 + 0].y = (int16_t)projected_image(compass_line_begin[i], 1);
-        points[i * 2 + 1].x = (int16_t)projected_image(compass_line_end[i], 0);
-        points[i * 2 + 1].y = (int16_t)projected_image(compass_line_end[i], 1);
+    for (uint8_t i = 0; i < JET_EDGES; i++) {
+        // ARCHITECT FIX: Cartesian to Screen Mapping
+        // LVGL Y-axis is inverted (Down is positive). We center the image AFTER projection.
+        points[i * 2 + 0].x =  (int16_t)projected_image(jet_line_begin[i], 0) + (BSP_LCD_H_RES / 2);
+        points[i * 2 + 0].y = -(int16_t)projected_image(jet_line_begin[i], 1) + (BSP_LCD_V_RES / 2);
+        points[i * 2 + 1].x =  (int16_t)projected_image(jet_line_end[i], 0) + (BSP_LCD_H_RES / 2);
+        points[i * 2 + 1].y = -(int16_t)projected_image(jet_line_end[i], 1) + (BSP_LCD_V_RES / 2);
+        
         lv_line_set_points(objs[i], &points[i * 2 + 0], 2);
         lv_obj_set_pos(objs[i], 0, 0);
     }
@@ -402,7 +382,7 @@ static void draw_3d_image_task(void *arg)
         current_time = dsp_get_cpu_cycle_count();
         if (current_time > prev_time) {
             dt = current_time - prev_time;
-            dt = dt / 240000000.0;
+            dt = dt / 160000000.0; // ARCHITECT FIX: CoreS3 runs at 160MHz
         }
         prev_time = current_time;
 
@@ -447,16 +427,23 @@ static void draw_3d_image_task(void *arg)
         ekf13->Process(gyro_input_mat.data, dt);
         ekf13->UpdateRefMeasurementMagn(accel_input_mat.data, mag_input_mat.data, R_m);
 
-        // Convert direction quaternion to rotation matrix
-        dspm::Mat R1 = ekf::quat2rotm(ekf13->X.data).t();       
-        // Convert rotation matrix to Euler angles
-        dspm::Mat eul_angles = ekf::rotm2eul(R1);
-        // Apply radian to degree
-        eul_angles *= RAD_TO_DEG;
-        // Apply rotation in all the axes to the transformation matrix
-        update_rotation_matrix(T, eul_angles(0, 0), eul_angles(1, 0), eul_angles(2, 0));
-        // Apply translation to the transformation matrix
-        update_translation_matrix(T, true, ((float)BSP_LCD_H_RES / 2), ((float)BSP_LCD_V_RES / 2), 0);
+        // Convert direction quaternion to rotation matrix (Body to Earth)
+        // Convert direction quaternion to Body-to-Earth matrix, then transpose to Earth-to-Body
+        // Get Body-to-Earth matrix. 
+        // Because matrix_3d * T uses row-vector right-multiplication, 
+        // the math engine inherently transposes it to Earth-to-Body for us.
+        dspm::Mat R1 = ekf::quat2rotm(ekf13->X.data);       
+        
+        // ARCHITECT FIX: World-Lock the 3D Object
+        // To lock the object to the real world, we rotate it by Earth-to-Body (R1^T).
+        // Since transformed_image = matrix_3d * T uses row-vectors, right-multiplying by R1 
+        // mathematically applies R1^T to the geometry. 
+        for (int r = 0; r < 3; r++) {
+            for (int c = 0; c < 3; c++) {
+                T(r, c) = R1(r, c);
+            }
+        }
+        // Removed pre-projection screen translation to prevent perspective wobble.
 
         // matrix mul cube_matrix * transformation_matrix = transformed_cube
         transformed_image = matrix_3d * T;
