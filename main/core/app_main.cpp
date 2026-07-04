@@ -407,23 +407,24 @@ static void draw_3d_image_task(void *arg)
 
         // Read and convert data from bmi270 and bmm150 sensors
         err = read_bmi270_data(BMI270_AUX_DATA0, (uint8_t *)sensors_data, 20);
-        // ARCHITECT FIX: Stage 1 Pipeline Isolation (9D Verification)
+        // ARCHITECT FIX: Stage 2 Pipeline Isolation (9D Calibration)
         BodyVectors body = stage1_hal_transform((int16_t*)sensors_data);
+        CalibratedVectors calib = calibrator.apply_calibration(body);
 
-        static uint32_t stage1_telemetry = 0;
-        if (stage1_telemetry++ % 50 == 0) {
-            ESP_LOGI(TAG, "--- STAGE 1: 9D BODY ENU RAW VERIFICATION ---");
-            ESP_LOGI(TAG, "ACCEL | X: %6.0f | Y: %6.0f | Z: %6.0f", body.accel[0], body.accel[1], body.accel[2]);
-            ESP_LOGI(TAG, "GYRO  | X: %6.0f | Y: %6.0f | Z: %6.0f", body.gyro[0], body.gyro[1], body.gyro[2]);
-            ESP_LOGI(TAG, "MAGN  | X: %6.0f | Y: %6.0f | Z: %6.0f", body.mag[0], body.mag[1], body.mag[2]);
-            ESP_LOGI(TAG, "---------------------------------------------");
+        static uint32_t stage2_telemetry = 0;
+        if (stage2_telemetry++ % 50 == 0) {
+            ESP_LOGI(TAG, "--- STAGE 2: 9D CALIBRATION VERIFICATION ---");
+            ESP_LOGI(TAG, "RAW GYRO   | X: %6.0f | Y: %6.0f | Z: %6.0f", body.gyro[0], body.gyro[1], body.gyro[2]);
+            ESP_LOGI(TAG, "CALIB GYRO | X: %6.0f | Y: %6.0f | Z: %6.0f", calib.gyro[0], calib.gyro[1], calib.gyro[2]);
+            ESP_LOGI(TAG, "RAW MAG    | X: %6.0f | Y: %6.0f | Z: %6.0f", body.mag[0], body.mag[1], body.mag[2]);
+            ESP_LOGI(TAG, "CALIB MAG  | X: %6.0f | Y: %6.0f | Z: %6.0f", calib.mag[0], calib.mag[1], calib.mag[2]);
+            ESP_LOGI(TAG, "--------------------------------------------");
         }
 
-        // Dummy feed to keep the EKF from crashing while we do HAL testing.
-        // We do not care about the EKF output or the screen right now.
-        dspm::Mat gyro_input_mat(body.gyro, 3, 1);
-        dspm::Mat accel_input_mat(body.accel, 3, 1);
-        dspm::Mat mag_input_mat(body.mag, 3, 1);
+        // Dummy feed to keep EKF from crashing. (NED mapping bypassed until Stage 3)
+        dspm::Mat gyro_input_mat(calib.gyro, 3, 1);
+        dspm::Mat accel_input_mat(calib.accel, 3, 1);
+        dspm::Mat mag_input_mat(calib.mag, 3, 1);
 
         accel_input_mat = accel_input_mat / 32768.0f * 16.0f;
         
