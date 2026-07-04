@@ -411,29 +411,27 @@ static void draw_3d_image_task(void *arg)
         // ARCHITECT FIX: Stage 3 Pipeline Termination (NED Translation)
         BodyVectors body = stage1_hal_transform((int16_t*)sensors_data);
         
-        // ARCHITECT FIX: True Silicon Hard-Iron Offsets
-        // The dies are perfectly aligned. No matrix rotation required.
-        CalibratedVectors calib;
-        calib.mag[0] = body.mag[0] - (-143.5f); // True X Center
-        calib.mag[1] = body.mag[1] - (85.0f);   // True Y Center
-        calib.mag[2] = body.mag[2] - (325.0f);  // True Z Center
+        // ARCHITECT FIX: Direct Hardware-to-ESKF Pipeline
+        // Bypassing redundant FRD/NED abstractions. 
+        // Applying mathematically proven silicon offsets to the magnetometer.
+        float calib_mag[3];
+        calib_mag[0] = body.mag[0] - (-143.5f);
+        calib_mag[1] = body.mag[1] - (85.0f);
+        calib_mag[2] = body.mag[2] - (325.0f);
 
-        NedVectors ned = stage3_ned_transform(calib);
-
-        static uint32_t stage3_telemetry = 0;
-        if (stage3_telemetry++ % 50 == 0) {
-            ESP_LOGI(TAG, "--- DIAGNOSTIC: STAGE 1 (RAW) vs STAGE 3 (NED) ---");
-            // What the raw silicon is reporting based on the physical chassis:
-            ESP_LOGI(TAG, "STG1 RAW MAG | X(Right): %6.0f | Y(Top): %6.0f | Z(Screen): %6.0f", body.mag[0], body.mag[1], body.mag[2]);
-            // What the math engine is interpreting:
-            ESP_LOGI(TAG, "STG3 NED MAG | N(North): %6.0f | E(East): %6.0f | D(Down):   %6.0f", ned.mag[0], ned.mag[1], ned.mag[2]);
-            ESP_LOGI(TAG, "--------------------------------------------------");
+        static uint32_t telemetry_counter = 0;
+        if (telemetry_counter++ % 50 == 0) {
+            ESP_LOGI(TAG, "--- ESKF INPUT (NATIVE XYZ) ---");
+            ESP_LOGI(TAG, "ACC | X: %7.0f | Y: %7.0f | Z: %7.0f", body.accel[0], body.accel[1], body.accel[2]);
+            ESP_LOGI(TAG, "GYR | X: %7.0f | Y: %7.0f | Z: %7.0f", body.gyro[0], body.gyro[1], body.gyro[2]);
+            ESP_LOGI(TAG, "MAG | X: %7.0f | Y: %7.0f | Z: %7.0f", calib_mag[0], calib_mag[1], calib_mag[2]);
+            ESP_LOGI(TAG, "-------------------------------");
         }
 
-        // Feed the geometrically perfect NED vectors directly into the ESKF Matrix Engine
-        dspm::Mat gyro_input_mat(ned.gyro, 3, 1);
-        dspm::Mat accel_input_mat(ned.accel, 3, 1);
-        dspm::Mat mag_input_mat(ned.mag, 3, 1);
+        // Feed the native, right-handed XYZ vectors directly into the ESKF Matrix Engine
+        dspm::Mat gyro_input_mat(body.gyro, 3, 1);
+        dspm::Mat accel_input_mat(body.accel, 3, 1);
+        dspm::Mat mag_input_mat(calib_mag, 3, 1);
 
         accel_input_mat = accel_input_mat / 32768.0f * 16.0f;
         
