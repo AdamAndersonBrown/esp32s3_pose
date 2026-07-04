@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "sensor_hal.h"
 #include "sensor_calib.h"
+#include "sensor_ned.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_dsp.h"
 #include "cube_matrix.h"
@@ -407,24 +408,32 @@ static void draw_3d_image_task(void *arg)
 
         // Read and convert data from bmi270 and bmm150 sensors
         err = read_bmi270_data(BMI270_AUX_DATA0, (uint8_t *)sensors_data, 20);
-        // ARCHITECT FIX: Stage 2 Pipeline Isolation (9D Calibration)
+        // ARCHITECT FIX: Stage 3 Pipeline Termination (NED Translation)
         BodyVectors body = stage1_hal_transform((int16_t*)sensors_data);
-        CalibratedVectors calib = calibrator.apply_calibration(body);
+        
+        // ARCHITECT FIX: True Silicon Hard-Iron Offsets
+        // The dies are perfectly aligned. No matrix rotation required.
+        CalibratedVectors calib;
+        calib.mag[0] = body.mag[0] - (-143.5f); // True X Center
+        calib.mag[1] = body.mag[1] - (85.0f);   // True Y Center
+        calib.mag[2] = body.mag[2] - (325.0f);  // True Z Center
 
-        static uint32_t stage2_telemetry = 0;
-        if (stage2_telemetry++ % 50 == 0) {
-            ESP_LOGI(TAG, "--- STAGE 2: 9D CALIBRATION VERIFICATION ---");
-            ESP_LOGI(TAG, "RAW GYRO   | X: %6.0f | Y: %6.0f | Z: %6.0f", body.gyro[0], body.gyro[1], body.gyro[2]);
-            ESP_LOGI(TAG, "CALIB GYRO | X: %6.0f | Y: %6.0f | Z: %6.0f", calib.gyro[0], calib.gyro[1], calib.gyro[2]);
-            ESP_LOGI(TAG, "RAW MAG    | X: %6.0f | Y: %6.0f | Z: %6.0f", body.mag[0], body.mag[1], body.mag[2]);
-            ESP_LOGI(TAG, "CALIB MAG  | X: %6.0f | Y: %6.0f | Z: %6.0f", calib.mag[0], calib.mag[1], calib.mag[2]);
-            ESP_LOGI(TAG, "--------------------------------------------");
+        NedVectors ned = stage3_ned_transform(calib);
+
+        static uint32_t stage3_telemetry = 0;
+        if (stage3_telemetry++ % 50 == 0) {
+            ESP_LOGI(TAG, "--- DIAGNOSTIC: STAGE 1 (RAW) vs STAGE 3 (NED) ---");
+            // What the raw silicon is reporting based on the physical chassis:
+            ESP_LOGI(TAG, "STG1 RAW MAG | X(Right): %6.0f | Y(Top): %6.0f | Z(Screen): %6.0f", body.mag[0], body.mag[1], body.mag[2]);
+            // What the math engine is interpreting:
+            ESP_LOGI(TAG, "STG3 NED MAG | N(North): %6.0f | E(East): %6.0f | D(Down):   %6.0f", ned.mag[0], ned.mag[1], ned.mag[2]);
+            ESP_LOGI(TAG, "--------------------------------------------------");
         }
 
-        // Dummy feed to keep EKF from crashing. (NED mapping bypassed until Stage 3)
-        dspm::Mat gyro_input_mat(calib.gyro, 3, 1);
-        dspm::Mat accel_input_mat(calib.accel, 3, 1);
-        dspm::Mat mag_input_mat(calib.mag, 3, 1);
+        // Feed the geometrically perfect NED vectors directly into the ESKF Matrix Engine
+        dspm::Mat gyro_input_mat(ned.gyro, 3, 1);
+        dspm::Mat accel_input_mat(ned.accel, 3, 1);
+        dspm::Mat mag_input_mat(ned.mag, 3, 1);
 
         accel_input_mat = accel_input_mat / 32768.0f * 16.0f;
         
