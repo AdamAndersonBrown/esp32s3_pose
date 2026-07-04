@@ -113,12 +113,14 @@ esp_err_t read_bmm150_data(uint8_t addr, uint8_t *data, int length)
 
 esp_err_t write_bmm150_data(uint8_t addr, uint8_t *data, int length)
 {
-    i2c_write_buffer[0] = BMI270_AUX_WRITE_DATA;
-    i2c_write_buffer[1] = data[0];
-    esp_err_t err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
-
+    // ARCHITECT FIX: Set target address FIRST (0x4E)
     i2c_write_buffer[0] = BMI270_AUX_WRITE_ADDR;
     i2c_write_buffer[1] = addr;
+    esp_err_t err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
+
+    // ARCHITECT FIX: Push data payload SECOND (0x4F) to trigger the hardware transaction
+    i2c_write_buffer[0] = BMI270_AUX_WRITE_DATA;
+    i2c_write_buffer[1] = data[0];
     err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
 
     return err;
@@ -127,7 +129,7 @@ esp_err_t write_bmm150_data(uint8_t addr, uint8_t *data, int length)
 esp_err_t write_bmi270_data(uint8_t addr, uint8_t *data, int length)
 {
     if (length < 32) {
-        i2c_write_buffer[0] = BMI270_AUX_WRITE_DATA;
+        i2c_write_buffer[0] = addr; // ARCHITECT FIX: Route to intended register
         for (size_t i = 0; i < length; i++) {
             i2c_write_buffer[1 + i] = data[i];
         }
@@ -236,28 +238,28 @@ static void app_init(void)
     i2c_write_buffer[0] = BMI270_PWR_CTRL;
     err = i2c_master_write_read_device(I2C_NUM_1, 0x69, i2c_write_buffer, 1, i2c_read_buffer, 1, 1000);
 
-    i2c_write_buffer[0] = BMI270_AUX_IF_CONFIG;
-    i2c_write_buffer[1] = 0x80;
-    err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
+    // ARCHITECT FIX: Set Target I2C Device Address (0x10 << 1 = 0x20)
+    write_bmi270_reg(BMI270_AUX_DEV_ID, 0x20);
 
-    i2c_write_buffer[0] = BMI270_AUX_IF_CONFIG;
-    err = i2c_master_write_read_device(I2C_NUM_1, 0x69, i2c_write_buffer, 1, i2c_read_buffer, 1, 1000);
-    // vTaskDelay(1);
+    // Enter Setup Mode
+    write_bmi270_reg(BMI270_AUX_IF_CONFIG, 0x80);
+    vTaskDelay(pdMS_TO_TICKS(10));
 
-    err = read_bmm150_data(BMM150_REG_POWER_CONTROL, i2c_read_buffer, 1);
-    i2c_read_buffer[0] = 1;
-    write_bmm150_data(BMM150_REG_POWER_CONTROL, i2c_read_buffer, 1);
-    read_bmm150_data(BMM150_REG_POWER_CONTROL, i2c_read_buffer, 1);
-    vTaskDelay(1);
+    // Wake BMM150 from Suspend to Sleep (Power Control = 1)
+    uint8_t pwr_ctrl = 0x01;
+    write_bmm150_data(BMM150_REG_POWER_CONTROL, &pwr_ctrl, 1);
+    vTaskDelay(pdMS_TO_TICKS(15)); // Strict delay for oscillators
 
-    err = read_bmm150_data(BMM150_SHIP_ID, i2c_read_buffer, 1);
-    ESP_LOGI(TAG, "bmm150 chip ID = 0x%2.2x (should be 0x32), err = %2.2x", i2c_read_buffer[0], err);
+    // Configure High-Accuracy Repetitions (XY: 47 -> 0x17, Z: 83 -> 0x52)
+    uint8_t rep_xy = 0x17;
+    write_bmm150_data(0x51, &rep_xy, 1);
+    uint8_t rep_z = 0x52;
+    write_bmm150_data(0x52, &rep_z, 1);
 
-    err = read_bmm150_data(0x4c, i2c_read_buffer, 1);
-    i2c_read_buffer[0] = 0x3 << 3;
-    write_bmm150_data(0x4c, i2c_read_buffer, 1);
-    err = read_bmm150_data(0x4c, i2c_read_buffer, 1);
-    vTaskDelay(1);
+    // Set Normal Mode (Operation Mode = 0x00)
+    uint8_t op_mode = 0x00;
+    write_bmm150_data(0x4c, &op_mode, 1);
+    vTaskDelay(pdMS_TO_TICKS(15));
 
     write_bmi270_reg(BMI270_PWR_CONF, 0);
     ESP_LOGI(TAG, "bmi270 status = %2.2x", read_bmi270_reg(BMI270_INTERNAL_STATUS, &err));
@@ -345,14 +347,7 @@ static void draw_3d_image_task(void *arg)
 
     float magn_norm = 1;
     
-        // --- NATIVE BMM150 WAKE UP ---
-        {
-            uint8_t pwr = 0x01; write_bmm150_data(0x4B, &pwr, 1); vTaskDelay(pdMS_TO_TICKS(15));
-            uint8_t repXY = 0x04; write_bmm150_data(0x51, &repXY, 1);
-            uint8_t repZ = 0x0F; write_bmm150_data(0x52, &repZ, 1);
-            uint8_t op = 0x00; write_bmm150_data(0x4C, &op, 1); vTaskDelay(pdMS_TO_TICKS(15));
-        }
-        // -----------------------------
+        // ARCHITECT FIX: BMM150 Initialization moved safely to app_init()
         while (1) {
 
                 
