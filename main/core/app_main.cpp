@@ -78,6 +78,7 @@ lv_display_t *display = NULL;
  */
 lv_obj_t **objs;
 lv_point_precise_t *points;
+lv_obj_t *status_indicator; // ARCHITECT FIX: Watchdog UI Element
 
 
 static 
@@ -241,6 +242,13 @@ static void app_init(void)
     }
 
     // Init the bmi270 and bmm150 chips
+    // Initialize Watchdog UI Indicator
+    status_indicator = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(status_indicator, 15, 15);
+    lv_obj_align(status_indicator, LV_ALIGN_TOP_RIGHT, -10, 10);
+    lv_obj_set_style_radius(status_indicator, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(status_indicator, lv_palette_main(LV_PALETTE_GREEN), LV_PART_MAIN);
+
     esp_err_t err = ESP_OK;
 
     
@@ -375,6 +383,10 @@ static void draw_3d_image_task(void *arg)
 
     static SensorCalibrator calibrator;
 
+    static float prev_mag[3] = {0, 0, 0};
+    static uint8_t deadlock_counter = 0;
+    bool sensor_deadlock = false;
+
     while (1) {
         esp_err_t err;
 
@@ -398,6 +410,19 @@ static void draw_3d_image_task(void *arg)
         calib_mag[0] = body.mag[0] - (-143.5f);
         calib_mag[1] = body.mag[1] - (85.0f);
         calib_mag[2] = body.mag[2] - (325.0f);
+
+        // ARCHITECT FIX: Hardware Variance Watchdog
+        // Checks if the auxiliary I2C bus has frozen by monitoring identical consecutive readings.
+        if (calib_mag[0] == prev_mag[0] && calib_mag[1] == prev_mag[1] && calib_mag[2] == prev_mag[2]) {
+            if (deadlock_counter < 255) deadlock_counter++;
+            if (deadlock_counter > 50) sensor_deadlock = true;
+        } else {
+            deadlock_counter = 0;
+            sensor_deadlock = false;
+        }
+        prev_mag[0] = calib_mag[0];
+        prev_mag[1] = calib_mag[1];
+        prev_mag[2] = calib_mag[2];
 
         static uint32_t telemetry_counter = 0;
         if (telemetry_counter++ % 50 == 0) {
@@ -451,6 +476,15 @@ static void draw_3d_image_task(void *arg)
         projected_image = transformed_image * perspective_matrix;
 
         display_3d_image(projected_image);
+
+        // Update Watchdog Visual Telemetry
+        bsp_display_lock(10000);
+        if (sensor_deadlock) {
+            lv_obj_set_style_bg_color(status_indicator, lv_palette_main(LV_PALETTE_RED), LV_PART_MAIN);
+        } else {
+            lv_obj_set_style_bg_color(status_indicator, lv_palette_main(LV_PALETTE_GREEN), LV_PART_MAIN);
+        }
+        bsp_display_unlock();
         vTaskDelay(5 / portTICK_PERIOD_MS);
     }
 }
