@@ -344,38 +344,22 @@ static void draw_3d_image_task(void *arg)
     float R_m[6] = {0.01, 0.01, 0.01, 0.01, 0.01, 0.01};
 
     float magn_norm = 1;
-    while (1) {
-
-        // --- 9-DOF RAW TELEMETRY ---
+    
+        // --- NATIVE BMM150 WAKE UP ---
         {
-            static int telemetry_tick = 0;
-            if (telemetry_tick++ % 20 == 0) {
-                // 1. Read Accel & Gyro from BMI270 (Registers 0x0C to 0x17)
-                uint8_t raw_imu[12] = {0};
-                uint8_t imu_reg = 0x0C; 
-                i2c_master_write_read_device(I2C_NUM_1, 0x69, &imu_reg, 1, raw_imu, 12, 1000);
-                
-                int16_t ax = (raw_imu[1] << 8) | raw_imu[0];
-                int16_t ay = (raw_imu[3] << 8) | raw_imu[2];
-                int16_t az = (raw_imu[5] << 8) | raw_imu[4];
-                int16_t gx = (raw_imu[7] << 8) | raw_imu[6];
-                int16_t gy = (raw_imu[9] << 8) | raw_imu[8];
-                int16_t gz = (raw_imu[11] << 8) | raw_imu[10];
-
-                // 2. Read Magnetometer from BMM150 (Registers 0x42 to 0x47)
-                uint8_t raw_mag[8] = {0};
-                uint8_t mag_reg = 0x42;
-                i2c_master_write_read_device(I2C_NUM_1, 0x10, &mag_reg, 1, raw_mag, 8, 1000);
-                
-                int16_t mx = (raw_mag[1] << 8) | raw_mag[0];
-                int16_t my = (raw_mag[3] << 8) | raw_mag[2];
-                int16_t mz = (raw_mag[5] << 8) | raw_mag[4];
-
-                ESP_LOGW("9-DOF", "ACC[%d, %d, %d] GYR[%d, %d, %d] MAG[%d, %d, %d]", ax, ay, az, gx, gy, gz, mx, my, mz);
-            }
+            uint8_t pwr = 0x01; write_bmm150_data(0x4B, &pwr, 1); vTaskDelay(pdMS_TO_TICKS(15));
+            uint8_t repXY = 0x04; write_bmm150_data(0x51, &repXY, 1);
+            uint8_t repZ = 0x0F; write_bmm150_data(0x52, &repZ, 1);
+            uint8_t op = 0x00; write_bmm150_data(0x4C, &op, 1); vTaskDelay(pdMS_TO_TICKS(15));
         }
-        // ------------------------------
+        // -----------------------------
+        while (1) {
 
+                
+
+                
+
+        
 
         esp_err_t err;
 
