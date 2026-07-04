@@ -7,6 +7,8 @@
 
 #include <stdio.h>
 #include "esp_log.h"
+#include "sensor_hal.h"
+#include "sensor_calib.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_dsp.h"
 #include "cube_matrix.h"
@@ -44,14 +46,49 @@ const float m5_cube_vectors_3d[CUBE_POINTS][MATRIX_SIZE] =
  *
  * @param image: 3d image structure
  */
+#define COMPASS_POINTS 14
+#define COMPASS_EDGES 16
+
+const float compass_vectors_3d[COMPASS_POINTS][MATRIX_SIZE] = {
+    // Cube Chassis (0-7)
+    {-M5_CUBE_SIDE, -M5_CUBE_SIDE, -M5_CUBE_SIDE, 1},
+    {-M5_CUBE_SIDE, -M5_CUBE_SIDE,  M5_CUBE_SIDE, 1},
+    {-M5_CUBE_SIDE,  M5_CUBE_SIDE, -M5_CUBE_SIDE, 1},
+    {-M5_CUBE_SIDE,  M5_CUBE_SIDE,  M5_CUBE_SIDE, 1},
+    { M5_CUBE_SIDE, -M5_CUBE_SIDE, -M5_CUBE_SIDE, 1},
+    { M5_CUBE_SIDE, -M5_CUBE_SIDE,  M5_CUBE_SIDE, 1},
+    { M5_CUBE_SIDE,  M5_CUBE_SIDE, -M5_CUBE_SIDE, 1},
+    { M5_CUBE_SIDE,  M5_CUBE_SIDE,  M5_CUBE_SIDE, 1},
+    // Earth Tangent Plane (NESW) (8-13)
+    { M5_CUBE_SIDE*1.5f, 0, 0, 1}, // 8: North (X+)
+    {-M5_CUBE_SIDE*1.5f, 0, 0, 1}, // 9: South (X-)
+    { 0, M5_CUBE_SIDE*1.5f, 0, 1}, // 10: East (Y+)
+    { 0,-M5_CUBE_SIDE*1.5f, 0, 1}, // 11: West (Y-)
+    { M5_CUBE_SIDE*1.1f, M5_CUBE_SIDE*0.3f, 0, 1}, // 12: North Arrowhead
+    { M5_CUBE_SIDE*1.1f,-M5_CUBE_SIDE*0.3f, 0, 1}  // 13: North Arrowhead
+};
+
+const uint8_t compass_line_begin[COMPASS_EDGES] = {
+    3, 3, 5, 5, 2, 2, 4, 4, 3, 7, 1, 5, // 12 cube edges
+    8, 10,  // N-S axis, E-W axis
+    8, 8    // Arrow head
+};
+const uint8_t compass_line_end[COMPASS_EDGES] = {
+    1, 7, 7, 1, 0, 6, 6, 0, 2, 6, 0, 4, // 12 cube edges
+    9, 11,  // N-S axis, E-W axis
+    12, 13  // Arrow head
+};
+
 static void init_3d_matrix_struct(image_3d_matrix_t *image)
 {
-    image->matrix = m5_cube_vectors_3d;
-    image->matrix_len = ((sizeof(m5_cube_vectors_3d)) / sizeof(float)) / MATRIX_SIZE;
+    // ARCHITECT FIX: Overriding primitive cube with full NESW Earth Tangent Compass Plane
+    image->matrix = compass_vectors_3d;
+    image->matrix_len = COMPASS_POINTS;
 }
 
 lv_style_t style_red;
 lv_style_t style_blue;
+lv_style_t style_green; // ARCHITECT FIX: Added for Earth Tangent Plane (NESW)
 lv_display_t *display = NULL;
 /**
  * @brief Initialize display
@@ -194,26 +231,35 @@ static void app_init(void)
 {
     lv_style_init(&style_red);
     lv_style_init(&style_blue);
+    lv_style_init(&style_green);
 
     lv_style_set_line_color(&style_red, lv_palette_main(LV_PALETTE_RED));
     lv_style_set_line_width(&style_red, 10);
     lv_style_set_line_rounded(&style_red, false);
+    
     lv_style_set_line_color(&style_blue, lv_palette_main(LV_PALETTE_BLUE));
     lv_style_set_line_width(&style_blue, 10);
     lv_style_set_line_rounded(&style_blue, false);
 
-    objs = (lv_obj_t **)malloc(CUBE_EDGES * sizeof(lv_obj_t *));
-    points = (lv_point_precise_t *)malloc(CUBE_EDGES * 2 * sizeof(lv_point_precise_t));
+    // ARCHITECT FIX: Style configuration for the Compass Rose
+    lv_style_set_line_color(&style_green, lv_palette_main(LV_PALETTE_GREEN));
+    lv_style_set_line_width(&style_green, 12);
+    lv_style_set_line_rounded(&style_green, true);
 
-    for (uint8_t cube_point = 0; cube_point < CUBE_EDGES / 2; cube_point++) {
+    objs = (lv_obj_t **)malloc(COMPASS_EDGES * sizeof(lv_obj_t *));
+    points = (lv_point_precise_t *)malloc(COMPASS_EDGES * 2 * sizeof(lv_point_precise_t));
 
-        objs[cube_point] = lv_line_create(lv_screen_active());
-        lv_obj_add_style(objs[cube_point], &style_red, 0);
+    for (uint8_t i = 0; i < 6; i++) {
+        objs[i] = lv_line_create(lv_screen_active());
+        lv_obj_add_style(objs[i], &style_red, 0);
     }
-    for (uint8_t cube_point = CUBE_EDGES / 2; cube_point < CUBE_EDGES; cube_point++) {
-
-        objs[cube_point] = lv_line_create(lv_screen_active());
-        lv_obj_add_style(objs[cube_point], &style_blue, 0);
+    for (uint8_t i = 6; i < 12; i++) {
+        objs[i] = lv_line_create(lv_screen_active());
+        lv_obj_add_style(objs[i], &style_blue, 0);
+    }
+    for (uint8_t i = 12; i < COMPASS_EDGES; i++) {
+        objs[i] = lv_line_create(lv_screen_active());
+        lv_obj_add_style(objs[i], &style_green, 0);
     }
 
     // Init the bmi270 and bmm150 chips
@@ -310,13 +356,14 @@ static void display_3d_image(dspm::Mat projected_image)
     // For the 3D cube, only the 6 points of the cube are transformed
     // Cube edges, connecting transformed 3D cube points are connected with lines here
     bsp_display_lock(10000);
-    for (uint8_t cube_point = 0; cube_point < CUBE_EDGES; cube_point++) {
-        points[cube_point * 2 + 0].x = (int16_t)projected_image(cube_dict_line_begin[cube_point], 0);
-        points[cube_point * 2 + 0].y = (int16_t)projected_image(cube_dict_line_begin[cube_point], 1);
-        points[cube_point * 2 + 1].x = (int16_t)projected_image(cube_dict_line_end[cube_point], 0);
-        points[cube_point * 2 + 1].y = (int16_t)projected_image(cube_dict_line_end[cube_point], 1);
-        lv_line_set_points(objs[cube_point], &points[cube_point * 2 + 0], 2);
-        lv_obj_set_pos(objs[cube_point], 0, 0);
+    // ARCHITECT FIX: Render COMPASS_EDGES dynamically instead of CUBE_EDGES
+    for (uint8_t i = 0; i < COMPASS_EDGES; i++) {
+        points[i * 2 + 0].x = (int16_t)projected_image(compass_line_begin[i], 0);
+        points[i * 2 + 0].y = (int16_t)projected_image(compass_line_begin[i], 1);
+        points[i * 2 + 1].x = (int16_t)projected_image(compass_line_end[i], 0);
+        points[i * 2 + 1].y = (int16_t)projected_image(compass_line_end[i], 1);
+        lv_line_set_points(objs[i], &points[i * 2 + 0], 2);
+        lv_obj_set_pos(objs[i], 0, 0);
     }
     bsp_display_unlock();
 }
@@ -345,17 +392,9 @@ static void draw_3d_image_task(void *arg)
     float current_time = dsp_get_cpu_cycle_count();
     float R_m[6] = {0.01, 0.01, 0.01, 0.01, 0.01, 0.01};
 
-    float magn_norm = 1;
-    
-        // ARCHITECT FIX: BMM150 Initialization moved safely to app_init()
-        while (1) {
+    static SensorCalibrator calibrator;
 
-                
-
-                
-
-        
-
+    while (1) {
         esp_err_t err;
 
         // Calculate dt for kalman filter
@@ -366,55 +405,43 @@ static void draw_3d_image_task(void *arg)
         }
         prev_time = current_time;
 
-
         // Read and convert data from bmi270 and bmm150 sensors
         err = read_bmi270_data(BMI270_AUX_DATA0, (uint8_t *)sensors_data, 20);
-        float accel[3];
-        float gyro[3];
-        float magn[3];
-        for (size_t i = 0; i < 3; i++) {
-            magn[i] = sensors_data[i];
-            accel[i] = sensors_data[4 + i];
-            gyro[i] = sensors_data[7 + i];
-            /* code */
+        // ARCHITECT FIX: Stage 1 Pipeline Isolation (9D Verification)
+        BodyVectors body = stage1_hal_transform((int16_t*)sensors_data);
+
+        static uint32_t stage1_telemetry = 0;
+        if (stage1_telemetry++ % 50 == 0) {
+            ESP_LOGI(TAG, "--- STAGE 1: 9D BODY ENU RAW VERIFICATION ---");
+            ESP_LOGI(TAG, "ACCEL | X: %6.0f | Y: %6.0f | Z: %6.0f", body.accel[0], body.accel[1], body.accel[2]);
+            ESP_LOGI(TAG, "GYRO  | X: %6.0f | Y: %6.0f | Z: %6.0f", body.gyro[0], body.gyro[1], body.gyro[2]);
+            ESP_LOGI(TAG, "MAGN  | X: %6.0f | Y: %6.0f | Z: %6.0f", body.mag[0], body.mag[1], body.mag[2]);
+            ESP_LOGI(TAG, "---------------------------------------------");
         }
 
-        // ARCHITECT FIX: Throttled telemetry logging (every 50 frames) to prevent UART buffer overflow and CPU starvation
-        static uint32_t telemetry_counter = 0;
-        if (telemetry_counter++ % 50 == 0) {
-            ESP_LOGI(TAG, "9-DoF Telemetry -> Acc: [%.0f, %.0f, %.0f] | Gyr: [%.0f, %.0f, %.0f] | Mag: [%.0f, %.0f, %.0f]",
-                     accel[0], accel[1], accel[2], gyro[0], gyro[1], gyro[2], magn[0], magn[1], magn[2]);
+        // Dummy feed to keep the EKF from crashing while we do HAL testing.
+        // We do not care about the EKF output or the screen right now.
+        dspm::Mat gyro_input_mat(body.gyro, 3, 1);
+        dspm::Mat accel_input_mat(body.accel, 3, 1);
+        dspm::Mat mag_input_mat(body.mag, 3, 1);
+
+        accel_input_mat = accel_input_mat / 32768.0f * 16.0f;
+        
+        float current_norm = mag_input_mat.norm();
+        if (current_norm > 0.001f) {
+            mag_input_mat = (1.0f / current_norm) * mag_input_mat;
         }
 
-        // We have to apply this because initial direction of sensors
-        magn[1] =  -magn[1];
-        accel[1] =  -accel[1];
-        gyro[1] =  -gyro[1];
-
-        magn[2] =  -magn[2];
-        accel[2] =  -accel[2];
-        gyro[2] =  -gyro[2];
-
-        dspm::Mat gyro_input_mat(gyro, 3, 1);
-        dspm::Mat accel_input_mat(accel, 3, 1);
-        dspm::Mat mag_input_mat(magn, 3, 1);
-
-        // Accelerometer has 166 max range fit to the int16 value
-        accel_input_mat = accel_input_mat / 32768 * 16;
-        if (magn_norm < mag_input_mat.norm()) {
-            magn_norm = mag_input_mat.norm();
-        }
-        mag_input_mat = (1 / magn_norm) * mag_input_mat;
-
-        // range 2000 gedree/sec fit to the int16 range
-        gyro_input_mat *= (2000 * DEG_TO_RAD / 32768);
+        // range 2000 degree/sec fit to the int16 range
+        
+        gyro_input_mat *= (2000.0f * DEG_TO_RAD / 32768.0f);
 
         ekf13->Process(gyro_input_mat.data, dt);
         ekf13->UpdateRefMeasurementMagn(accel_input_mat.data, mag_input_mat.data, R_m);
 
         // Convert direction quaternion to rotation matrix
-        dspm::Mat R1 = ekf::quat2rotm(ekf13->X.data).t();       // matrix(3x1) that holds x, y, z rotation data
-        // Convert rotation matrix to Euler angels
+        dspm::Mat R1 = ekf::quat2rotm(ekf13->X.data).t();       
+        // Convert rotation matrix to Euler angles
         dspm::Mat eul_angles = ekf::rotm2eul(R1);
         // Apply radian to degree
         eul_angles *= RAD_TO_DEG;
@@ -423,15 +450,16 @@ static void draw_3d_image_task(void *arg)
         // Apply translation to the transformation matrix
         update_translation_matrix(T, true, ((float)BSP_LCD_H_RES / 2), ((float)BSP_LCD_V_RES / 2), 0);
 
-        // matrix mul cube_matirx(8x4) * transformation_matrix(4x4) = transformed_cube(8x4)
+        // matrix mul cube_matrix * transformation_matrix = transformed_cube
         transformed_image = matrix_3d * T;
-        // matrix mul transformed_cube(8x4) * perspective_matrix(4x4) = projected_cube(8x4)
+        // matrix mul transformed_cube * perspective_matrix = projected_cube
         projected_image = transformed_image * perspective_matrix;
 
         display_3d_image(projected_image);
         vTaskDelay(5 / portTICK_PERIOD_MS);
     }
 }
+
 image_3d_matrix_t image;
 void app_main(void)
 {
@@ -443,27 +471,25 @@ void app_main(void)
     init_perspective_matrix(perspective_matrix);
     init_3d_matrix_struct(&image);
     
-        // -- HARDWARE HIJACK: Map internal I2C pins to Legacy Port 1 --
-        i2c_config_t i2c_conf = {};
-        i2c_conf.mode = I2C_MODE_MASTER;
-        i2c_conf.sda_io_num = 12; // CoreS3 Internal SDA
-        i2c_conf.scl_io_num = 11; // CoreS3 Internal SCL
-        i2c_conf.sda_pullup_en = true;
-        i2c_conf.scl_pullup_en = true;
-        i2c_conf.master.clk_speed = 400000; // 400kHz Fast Mode
-        
-        i2c_driver_delete(I2C_NUM_1);
-        i2c_param_config(I2C_NUM_1, &i2c_conf);
-        i2c_driver_install(I2C_NUM_1, i2c_conf.mode, 0, 0, 0);
+    // -- HARDWARE HIJACK: Map internal I2C pins to Legacy Port 1 --
+    i2c_config_t i2c_conf = {};
+    i2c_conf.mode = I2C_MODE_MASTER;
+    i2c_conf.sda_io_num = 12; // CoreS3 Internal SDA
+    i2c_conf.scl_io_num = 11; // CoreS3 Internal SCL
+    i2c_conf.sda_pullup_en = true;
+    i2c_conf.scl_pullup_en = true;
+    i2c_conf.master.clk_speed = 400000; // 400kHz Fast Mode
+    
+    i2c_driver_delete(I2C_NUM_1);
+    i2c_param_config(I2C_NUM_1, &i2c_conf);
+    i2c_driver_install(I2C_NUM_1, i2c_conf.mode, 0, 0, 0);
 
-        // --- BMI270 SILICON RESET ---
-        uint8_t reset_cmd[2] = {0x7E, 0xB6};
-        i2c_master_write_to_device(I2C_NUM_1, 0x69, reset_cmd, 2, 1000);
-        vTaskDelay(pdMS_TO_TICKS(50)); // 50ms absolute boot delay to clear silicon
-        // ----------------------------
-        // -------------------------------------------------------------
-
-        bsp_display_lock(0);
+    // --- BMI270 SILICON RESET ---
+    uint8_t reset_cmd[2] = {0x7E, 0xB6};
+    i2c_master_write_to_device(I2C_NUM_1, 0x69, reset_cmd, 2, 1000);
+    vTaskDelay(pdMS_TO_TICKS(50)); // 50ms absolute boot delay to clear silicon
+    
+    bsp_display_lock(0);
     app_init();
     bsp_display_unlock();
 
@@ -471,5 +497,4 @@ void app_main(void)
 
     xTaskCreate(draw_3d_image_task, "draw_3d_image", 16384, &image, 4, NULL);
     ESP_LOGI(TAG, "Showing 3D image");
-
 }
