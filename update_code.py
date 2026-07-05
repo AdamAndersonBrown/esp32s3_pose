@@ -1,218 +1,181 @@
 import os
 
-hal_h = os.path.join("main", "hal", "hal_imu.h")
-hal_cpp = os.path.join("main", "hal", "hal_imu.cpp")
-ui_cpp = os.path.join("main", "ui", "ui_render.cpp")
+fusion_cpp = os.path.join("main", "fusion", "eskf_fusion.cpp")
 
-# ==========================================
-# 1. EXPOSE CUSTOM TOUCH DRIVER IN HAL HEADER
-# ==========================================
-with open(hal_h, "r") as f:
-    h_content = f.read()
-
-if "imu_hal_read_touch" not in h_content:
-    h_content = h_content.replace(
-        "esp_err_t imu_hal_read_9dof(imu_9dof_data_t *data);",
-        "esp_err_t imu_hal_read_9dof(imu_9dof_data_t *data);\nbool imu_hal_read_touch(int16_t *x, int16_t *y);"
-    )
-    with open(hal_h, "w") as f:
-        f.write(h_content)
-
-# ==========================================
-# 2. INJECT BARE-METAL TOUCH AND AW9523B WAKEUP
-# ==========================================
-with open(hal_cpp, "r") as f:
-    cpp_content = f.read()
-
-if "imu_hal_read_touch" not in cpp_content:
-    touch_driver = """
-// ARCHITECT FIX: Bare-Metal Touch Polling & AW9523B Reset
-bool imu_hal_read_touch(int16_t *x, int16_t *y) {
-    static bool touch_hw_awake = false;
-    if (!touch_hw_awake) {
-        // AW9523B Expander (0x58). Pin P0_0 controls the FT6336U Touch Reset.
-        uint8_t conf = 0;
-        uint8_t reg_conf = 0x04; // P0 Configuration Register
-        if (i2c_master_write_read_device(IMU_I2C_PORT, 0x58, &reg_conf, 1, &conf, 1, 1000) == ESP_OK) {
-            conf &= ~0x01; // Set P0_0 to Output
-            uint8_t write_conf[2] = {0x04, conf};
-            i2c_master_write_to_device(IMU_I2C_PORT, 0x58, write_conf, 2, 1000);
-        }
-        
-        uint8_t out = 0;
-        uint8_t reg_out = 0x02; // P0 Output Data Register
-        if (i2c_master_write_read_device(IMU_I2C_PORT, 0x58, &reg_out, 1, &out, 1, 1000) == ESP_OK) {
-            out |= 0x01; // Pull P0_0 HIGH to release FT6336U from Reset
-            uint8_t write_out[2] = {0x02, out};
-            i2c_master_write_to_device(IMU_I2C_PORT, 0x58, write_out, 2, 1000);
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(50)); // Give the Touch IC 50ms to boot
-        touch_hw_awake = true;
-    }
-
-    uint8_t data[5];
-    uint8_t reg = 0x02; // FT6336U TD_STATUS Register
-    esp_err_t err = i2c_master_write_read_device(IMU_I2C_PORT, 0x38, &reg, 1, data, 5, 1000);
-    
-    if (err == ESP_OK && (data[0] & 0x0F) > 0) { // If point count > 0
-        *x = ((data[1] & 0x0F) << 8) | data[2];
-        *y = ((data[3] & 0x0F) << 8) | data[4];
-        return true;
-    }
-    return false;
-}
-"""
-    with open(hal_cpp, "a") as f:
-        f.write(touch_driver)
-
-# ==========================================
-# 3. REWRITE UI_RENDER.CPP TO BYPASS BSP TOUCH
-# ==========================================
-ui_content = """#include "ui_render.h"
-#include "hal_imu.h"
-#include "bsp/m5stack_core_s3.h"
+content = """#include "eskf_fusion.h"
+#include "nvs_calibration.h"
+#include "ui_render.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
+#include <math.h>
+#include "sensor_hal.h"
 #include "cube_matrix.h"
 #include "image_to_3d_matrix.h"
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846f
+#endif
+
+#ifndef DEG_TO_RAD
+#define DEG_TO_RAD (M_PI / 180.0f)
+#endif
+
+#include "esp_dsp.h"
+#include "sensor_calib.h"
 #include "sensor_ned.h"
 
-static const char *TAG = "UI_RENDER";
+static const char *TAG = "ESKF_PHYSICS";
+static QueueHandle_t imu_queue = NULL;
+static ekf_imu13states *ekf13 = NULL;
+static hard_iron_profile_t mag_profile;
 
-#define M5_CUBE_SIDE (BSP_LCD_V_RES / 4)
-#define JET_POINTS 6
-#define JET_EDGES 11
+static bool is_calibrating = false;
+static uint16_t calib_samples = 0;
+static float mag_min[3] = {99999.0f, 99999.0f, 99999.0f};
+static float mag_max[3] = {-99999.0f, -99999.0f, -99999.0f};
 
-const float jet_vectors_3d[JET_POINTS][MATRIX_SIZE] = {
-    {  80,   0,   0, 1}, {-40,   60,   0, 1}, {-40,  -60,   0, 1}, 
-    {-60,    0,   0, 1}, {-70,    0, -40, 1}, {-20,    0,  20, 1}  
-};
+static void eskf_physics_task(void *pvParameters) {
+    imu_9dof_data_t sensor_data;
+    quaternion_t current_q = {1.0f, 0.0f, 0.0f, 0.0f};
+    float dt = 0;
+    static float prev_time = 0;
+    float current_time = dsp_get_cpu_cycle_count();
 
-const uint8_t jet_line_begin[JET_EDGES] = {0, 0, 1, 2, 3, 1, 2, 0, 1, 2, 3};
-const uint8_t jet_line_end[JET_EDGES]   = {1, 2, 3, 3, 4, 4, 4, 5, 5, 5, 5};
+    ESP_LOGI(TAG, "Physics Engine Task Started (Core 1).");
 
-lv_style_t style_red; lv_style_t style_blue; lv_style_t style_green; 
-lv_display_t *display = NULL;
-lv_obj_t **objs;
-lv_point_precise_t *points;
-lv_obj_t *status_indicator;
+    while (1) {
+        if (xQueueReceive(imu_queue, &sensor_data, portMAX_DELAY) == pdTRUE) {
+            current_time = dsp_get_cpu_cycle_count();
+            if (current_time > prev_time) {
+                dt = (current_time - prev_time) / 160000000.0;
+            }
+            prev_time = current_time;
 
-image_3d_matrix_t image;
-dspm::Mat perspective_matrix(MATRIX_SIZE, MATRIX_SIZE);
+            if (is_calibrating && sensor_data.mag_valid) {
+                if (sensor_data.mag_x < mag_min[0]) mag_min[0] = sensor_data.mag_x;
+                if (sensor_data.mag_x > mag_max[0]) mag_max[0] = sensor_data.mag_x;
+                
+                if (sensor_data.mag_y < mag_min[1]) mag_min[1] = sensor_data.mag_y;
+                if (sensor_data.mag_y > mag_max[1]) mag_max[1] = sensor_data.mag_y;
+                
+                if (sensor_data.mag_z < mag_min[2]) mag_min[2] = sensor_data.mag_z;
+                if (sensor_data.mag_z > mag_max[2]) mag_max[2] = sensor_data.mag_z;
+                
+                calib_samples++;
+                
+                if (calib_samples % 60 == 0) {
+                    ESP_LOGI(TAG, "Calibrating... [%d/900 samples collected]", calib_samples);
+                }
 
-// ARCHITECT FIX: Direct Hardware Feed to LVGL
-static void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data) {
-    int16_t x, y;
-    if (imu_hal_read_touch(&x, &y)) {
-        static uint8_t throttle = 0;
-        if (throttle++ % 10 == 0) {
-            ESP_LOGI(TAG, "Touch Detected! Raw X:%d, Y:%d", x, y);
-        }
-        data->point.x = x;
-        data->point.y = y;
-        data->state = LV_INDEV_STATE_PRESSED;
-    } else {
-        data->state = LV_INDEV_STATE_RELEASED;
-    }
-}
+                if (calib_samples >= 900) {
+                    mag_profile.offset_x = (mag_max[0] + mag_min[0]) / 2.0f;
+                    mag_profile.offset_y = (mag_max[1] + mag_min[1]) / 2.0f;
+                    mag_profile.offset_z = (mag_max[2] + mag_min[2]) / 2.0f;
+                    mag_profile.is_calibrated = true;
+                    
+                    eskf_save_calibration(&mag_profile);
+                    is_calibrating = false;
+                    
+                    ekf13->Init(); 
+                    
+                    ESP_LOGI(TAG, "=== CALIBRATION COMPLETE ===");
+                }
+                continue; 
+            }
 
-static void calib_btn_event_cb(lv_event_t * e) {
-    lv_event_code_t code = lv_event_get_code(e);
-    if(code == LV_EVENT_CLICKED) {
-        ESP_LOGW(TAG, "UI Button Clicked: Triggering ESKF Calibration");
-        eskf_trigger_calibration();
-    }
-}
+            if (mag_profile.is_calibrated) {
+                sensor_data.mag_x -= mag_profile.offset_x;
+                sensor_data.mag_y -= mag_profile.offset_y;
+                sensor_data.mag_z -= mag_profile.offset_z;
+            }
 
-void ui_render_init(void) {
-    display = bsp_display_start();
-    init_perspective_matrix(perspective_matrix);
-    
-    image.matrix = jet_vectors_3d;
-    image.matrix_len = JET_POINTS;
+            static uint32_t telemetry_counter = 0;
+            if (telemetry_counter++ % 50 == 0) {
+                ESP_LOGI(TAG, "--- ESKF INPUT (NATIVE XYZ) ---");
+                ESP_LOGI(TAG, "ACC | X: %7.0f | Y: %7.0f | Z: %7.0f", sensor_data.acc_x, sensor_data.acc_y, sensor_data.acc_z);
+                ESP_LOGI(TAG, "GYR | X: %7.0f | Y: %7.0f | Z: %7.0f", sensor_data.gyr_x, sensor_data.gyr_y, sensor_data.gyr_z);
+                ESP_LOGI(TAG, "MAG | X: %7.0f | Y: %7.0f | Z: %7.0f", sensor_data.mag_x, sensor_data.mag_y, sensor_data.mag_z);
+                ESP_LOGI(TAG, "-------------------------------");
+            }
 
-    bsp_display_lock(0);
+            float acc_arr[3] = {sensor_data.acc_x, sensor_data.acc_y, sensor_data.acc_z};
+            float gyr_arr[3] = {sensor_data.gyr_x, sensor_data.gyr_y, sensor_data.gyr_z};
+            float mag_arr[3] = {sensor_data.mag_x, sensor_data.mag_y, sensor_data.mag_z};
 
-    lv_indev_t * indev = lv_indev_create();
-    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_read_cb(indev, touch_read_cb);
+            dspm::Mat gyro_input_mat(gyr_arr, 3, 1);
+            dspm::Mat accel_input_mat(acc_arr, 3, 1);
+            dspm::Mat mag_input_mat(mag_arr, 3, 1);
 
-    lv_style_init(&style_red); lv_style_init(&style_blue); lv_style_init(&style_green);
+            accel_input_mat = accel_input_mat / 32768.0f * 16.0f;
+            
+            float current_norm = mag_input_mat.norm();
+            if (current_norm > 0.001f) {
+                mag_input_mat = (1.0f / current_norm) * mag_input_mat;
+            }
 
-    lv_style_set_line_color(&style_red, lv_palette_main(LV_PALETTE_RED));
-    lv_style_set_line_width(&style_red, 10);
-    lv_style_set_line_color(&style_blue, lv_palette_main(LV_PALETTE_BLUE));
-    lv_style_set_line_width(&style_blue, 10);
-    lv_style_set_line_color(&style_green, lv_palette_main(LV_PALETTE_GREEN));
-    lv_style_set_line_width(&style_green, 12);
-    lv_style_set_line_rounded(&style_green, true);
+            gyro_input_mat *= (2000.0f * DEG_TO_RAD / 32768.0f);
 
-    objs = (lv_obj_t **)malloc(JET_EDGES * sizeof(lv_obj_t *));
-    points = (lv_point_precise_t *)malloc(JET_EDGES * 2 * sizeof(lv_point_precise_t));
+            ekf13->Process(gyro_input_mat.data, dt);
 
-    for (uint8_t i = 0; i < JET_EDGES; i++) {
-        objs[i] = lv_line_create(lv_screen_active());
-        if (i >= 7) lv_obj_add_style(objs[i], &style_green, 0);
-        else if (i >= 4) lv_obj_add_style(objs[i], &style_blue, 0);
-        else lv_obj_add_style(objs[i], &style_red, 0);
-    }
+            float R_m[6] = {0.5f, 0.5f, 0.5f, 0.03f, 0.03f, 0.03f}; 
 
-    status_indicator = lv_obj_create(lv_screen_active());
-    lv_obj_set_size(status_indicator, 15, 15);
-    lv_obj_align(status_indicator, LV_ALIGN_TOP_RIGHT, -10, 10);
-    lv_obj_set_style_radius(status_indicator, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(status_indicator, lv_palette_main(LV_PALETTE_GREEN), LV_PART_MAIN);
+            if (sensor_data.mag_valid) {
+                ekf13->UpdateRefMeasurementMagn(accel_input_mat.data, mag_input_mat.data, R_m);
+            }
 
-    lv_obj_t * calib_btn = lv_button_create(lv_screen_active());
-    lv_obj_set_size(calib_btn, 120, 40);
-    lv_obj_align(calib_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
-    lv_obj_add_event_cb(calib_btn, calib_btn_event_cb, LV_EVENT_CLICKED, NULL);
+            current_q.q0 = ekf13->X.data[0];
+            current_q.q1 = ekf13->X.data[1];
+            current_q.q2 = ekf13->X.data[2];
+            current_q.q3 = ekf13->X.data[3];
 
-    lv_obj_t * btn_label = lv_label_create(calib_btn);
-    lv_label_set_text(btn_label, "Calibrate");
-    lv_obj_center(btn_label);
-
-    bsp_display_unlock();
-}
-
-void ui_render_update_3d(quaternion_t *q, bool is_deadlocked) {
-    dspm::Mat T = dspm::Mat::eye(MATRIX_SIZE);
-    dspm::Mat transformed_image(image.matrix_len, MATRIX_SIZE);
-    dspm::Mat projected_image(image.matrix_len, MATRIX_SIZE);
-    dspm::Mat matrix_3d((float *)image.matrix[0], image.matrix_len, MATRIX_SIZE);
-
-    float q_array[4] = {q->q0, q->q1, q->q2, q->q3};
-    dspm::Mat R1 = ekf::quat2rotm(q_array);       
-    
-    for (int r = 0; r < 3; r++) {
-        for (int c = 0; c < 3; c++) {
-            T(r, c) = R1(r, c);
+            ui_render_update_3d(&current_q, !sensor_data.mag_valid);
         }
     }
+}
 
-    transformed_image = matrix_3d * T;
-    projected_image = transformed_image * perspective_matrix;
+void eskf_fusion_init(void) {
+    ESP_LOGI(TAG, "Initializing ESKF Physics Engine...");
+    ekf13 = new ekf_imu13states();
+    ekf13->Init();
 
-    bsp_display_lock(10000);
-    for (uint8_t i = 0; i < JET_EDGES; i++) {
-        points[i * 2 + 0].x =  (int16_t)projected_image(jet_line_begin[i], 0) + (BSP_LCD_H_RES / 2);
-        points[i * 2 + 0].y = -(int16_t)projected_image(jet_line_begin[i], 1) + (BSP_LCD_V_RES / 2);
-        points[i * 2 + 1].x =  (int16_t)projected_image(jet_line_end[i], 0) + (BSP_LCD_H_RES / 2);
-        points[i * 2 + 1].y = -(int16_t)projected_image(jet_line_end[i], 1) + (BSP_LCD_V_RES / 2);
-        
-        lv_line_set_points(objs[i], &points[i * 2 + 0], 2);
-        lv_obj_set_pos(objs[i], 0, 0);
+    if (eskf_load_calibration(&mag_profile) != ESP_OK || !mag_profile.is_calibrated) {
+        mag_profile.offset_x = -143.5f;
+        mag_profile.offset_y = 85.0f;
+        mag_profile.offset_z = 325.0f;
+        mag_profile.is_calibrated = true; 
+        eskf_save_calibration(&mag_profile);
     }
 
-    if (is_deadlocked) {
-        lv_obj_set_style_bg_color(status_indicator, lv_palette_main(LV_PALETTE_RED), LV_PART_MAIN);
-    } else {
-        lv_obj_set_style_bg_color(status_indicator, lv_palette_main(LV_PALETTE_GREEN), LV_PART_MAIN);
+    imu_queue = xQueueCreate(10, sizeof(imu_9dof_data_t));
+    if (imu_queue != NULL) {
+        xTaskCreatePinnedToCore(eskf_physics_task, "eskf_physics", 16384, NULL, 5, NULL, 1);
     }
-    bsp_display_unlock();
+}
+
+void eskf_fusion_queue_data(imu_9dof_data_t *data) {
+    if (imu_queue != NULL) {
+        xQueueSend(imu_queue, data, 0);
+    }
+}
+
+void eskf_trigger_calibration(void) {
+    if (!is_calibrating) {
+        ESP_LOGW(TAG, "=== CALIBRATION MODE TRIGGERED ===");
+        mag_min[0] = 99999.0f; mag_min[1] = 99999.0f; mag_min[2] = 99999.0f;
+        mag_max[0] = -99999.0f; mag_max[1] = -99999.0f; mag_max[2] = -99999.0f;
+        calib_samples = 0;
+        is_calibrating = true;
+    }
+}
+
+bool eskf_is_calibrating(void) {
+    return is_calibrating;
 }
 """
-with open(ui_cpp, "w") as f:
-    f.write(ui_content)
 
-print("Successfully injected Bare-Metal Touch Initialization via AW9523B!")
+with open(fusion_cpp, "w") as f:
+    f.write(content)
+
+print("Successfully reverted to the pure, unhacked EKF architecture.")

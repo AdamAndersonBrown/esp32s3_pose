@@ -5,6 +5,8 @@
 #include "cube_matrix.h"
 #include "image_to_3d_matrix.h"
 #include "sensor_ned.h"
+#include "eskf_fusion.h"
+#include <stdio.h>
 
 static const char *TAG = "UI_RENDER";
 
@@ -26,17 +28,19 @@ lv_obj_t **objs;
 lv_point_precise_t *points;
 lv_obj_t *status_indicator;
 
+// ARCHITECT FIX: Calibration Overlay Objects
+lv_obj_t * calib_overlay;
+lv_obj_t * calib_overlay_label;
+
 image_3d_matrix_t image;
 dspm::Mat perspective_matrix(MATRIX_SIZE, MATRIX_SIZE);
 
-// ARCHITECT FIX: Direct Hardware Feed to LVGL
+// ==========================================
+// RESTORED: Bare-Metal Hardware Feed to LVGL
+// ==========================================
 static void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data) {
     int16_t x, y;
     if (imu_hal_read_touch(&x, &y)) {
-        static uint8_t throttle = 0;
-        if (throttle++ % 10 == 0) {
-            ESP_LOGI(TAG, "Touch Detected! Raw X:%d, Y:%d", x, y);
-        }
         data->point.x = x;
         data->point.y = y;
         data->state = LV_INDEV_STATE_PRESSED;
@@ -45,11 +49,40 @@ static void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data) {
     }
 }
 
+// ==========================================
+// RESTORED: 5-Second Hold Timer
+// ==========================================
+static uint32_t press_start_time = 0;
+static bool press_triggered = false;
+
 static void calib_btn_event_cb(lv_event_t * e) {
     lv_event_code_t code = lv_event_get_code(e);
-    if(code == LV_EVENT_CLICKED) {
-        ESP_LOGW(TAG, "UI Button Clicked: Triggering ESKF Calibration");
-        eskf_trigger_calibration();
+    lv_obj_t * btn = (lv_obj_t *)lv_event_get_target(e);
+    lv_obj_t * label = lv_obj_get_child(btn, 0);
+    
+    if (code == LV_EVENT_PRESSED) {
+        press_start_time = lv_tick_get();
+        press_triggered = false;
+    } 
+    else if (code == LV_EVENT_PRESSING) {
+        if (!press_triggered) {
+            uint32_t elapsed = lv_tick_get() - press_start_time;
+            if (elapsed > 5000) {
+                press_triggered = true;
+                ESP_LOGW(TAG, "5s Hold Reached: Triggering ESKF Calibration");
+                eskf_trigger_calibration();
+                lv_label_set_text(label, "Calibrate");
+            } else {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "Hold %lu...", 5 - (elapsed / 1000));
+                lv_label_set_text(label, buf);
+            }
+        }
+    } 
+    else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        press_start_time = 0;
+        press_triggered = false;
+        lv_label_set_text(label, "Calibrate");
     }
 }
 
@@ -62,6 +95,7 @@ void ui_render_init(void) {
 
     bsp_display_lock(0);
 
+    // ARCHITECT FIX: Bind Bare-Metal Touch to LVGL
     lv_indev_t * indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, touch_read_cb);
@@ -95,11 +129,29 @@ void ui_render_init(void) {
     lv_obj_t * calib_btn = lv_button_create(lv_screen_active());
     lv_obj_set_size(calib_btn, 120, 40);
     lv_obj_align(calib_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
-    lv_obj_add_event_cb(calib_btn, calib_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(calib_btn, calib_btn_event_cb, LV_EVENT_ALL, NULL);
 
     lv_obj_t * btn_label = lv_label_create(calib_btn);
     lv_label_set_text(btn_label, "Calibrate");
     lv_obj_center(btn_label);
+
+    // ARCHITECT FIX: Create Full-Screen Overlay
+    calib_overlay = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(calib_overlay, BSP_LCD_H_RES, BSP_LCD_V_RES);
+    lv_obj_set_style_bg_color(calib_overlay, lv_palette_main(LV_PALETTE_BLUE_GREY), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(calib_overlay, LV_OPA_80, LV_PART_MAIN);
+    lv_obj_set_style_border_width(calib_overlay, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(calib_overlay, 0, LV_PART_MAIN);
+    lv_obj_align(calib_overlay, LV_ALIGN_CENTER, 0, 0);
+
+    calib_overlay_label = lv_label_create(calib_overlay);
+    lv_label_set_text(calib_overlay_label, "CALIBRATION MODE\n\nRotate device in a\n3D Figure-8...");
+    lv_obj_set_style_text_align(calib_overlay_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(calib_overlay_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(calib_overlay_label);
+
+    // Hide it by default
+    lv_obj_add_flag(calib_overlay, LV_OBJ_FLAG_HIDDEN);
 
     bsp_display_unlock();
 }
@@ -123,6 +175,21 @@ void ui_render_update_3d(quaternion_t *q, bool is_deadlocked) {
     projected_image = transformed_image * perspective_matrix;
 
     bsp_display_lock(10000);
+    
+    // ARCHITECT FIX: UI Overlay State Polling
+    static bool was_calibrating = false;
+    bool is_calib = eskf_is_calibrating();
+    
+    if (is_calib != was_calibrating) {
+        if (is_calib) {
+            lv_obj_clear_flag(calib_overlay, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(calib_overlay);
+        } else {
+            lv_obj_add_flag(calib_overlay, LV_OBJ_FLAG_HIDDEN);
+        }
+        was_calibrating = is_calib;
+    }
+
     for (uint8_t i = 0; i < JET_EDGES; i++) {
         points[i * 2 + 0].x =  (int16_t)projected_image(jet_line_begin[i], 0) + (BSP_LCD_H_RES / 2);
         points[i * 2 + 0].y = -(int16_t)projected_image(jet_line_begin[i], 1) + (BSP_LCD_V_RES / 2);

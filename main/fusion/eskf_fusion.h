@@ -28,5 +28,6 @@ void eskf_fusion_queue_data(imu_9dof_data_t *data);
 void eskf_trigger_calibration(void);
 
 #ifdef __cplusplus
+bool eskf_is_calibrating(void);
 }
 #endif
