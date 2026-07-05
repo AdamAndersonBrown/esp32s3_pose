@@ -97,7 +97,7 @@ uint8_t read_bmi270_reg(uint8_t addr, esp_err_t *err) {
 }
 
 esp_err_t imu_hal_init(void) {
-    ESP_LOGI(TAG, "Initializing 9-DoF Hardware Abstraction Layer...");
+    ESP_LOGI(TAG, "Initializing 9-DoF Hardware Abstraction Layer (Legacy I2C)...");
 
     i2c_config_t i2c_conf = {};
     i2c_conf.mode = I2C_MODE_MASTER;
