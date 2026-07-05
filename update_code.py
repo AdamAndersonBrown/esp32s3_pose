@@ -1,40 +1,34 @@
 import os
 
 fusion_cpp = os.path.join("main", "fusion", "eskf_fusion.cpp")
-ui_cpp = os.path.join("main", "ui", "ui_render.cpp")
 
-# 1. Inject missing transitive dependencies into the Physics Layer
 with open(fusion_cpp, "r") as f:
     content = f.read()
 
-headers_to_inject = """#include <math.h>
-#include "sensor_hal.h"
-#include "cube_matrix.h"
-#include "image_to_3d_matrix.h"
+old_init = """    // ARCHITECT FIX: Load localized Hard-Iron footprint from Flash Memory
+    if (eskf_load_calibration(&mag_profile) != ESP_OK || !mag_profile.is_calibrated) {
+        ESP_LOGW(TAG, "No localized NVS profile found. Falling back to compiled baseline.");
+        mag_profile.offset_x = -143.5f;
+        mag_profile.offset_y = 85.0f;
+        mag_profile.offset_z = 325.0f;
+        mag_profile.is_calibrated = true; // Actively use the fallback
+    }"""
 
-// Failsafe definitions in case the BSP math headers are aggressively pruned
-#ifndef M_PI
-#define M_PI 3.14159265358979323846f
-#endif
+new_init = """    // ARCHITECT FIX: Load localized Hard-Iron footprint from Flash Memory
+    if (eskf_load_calibration(&mag_profile) != ESP_OK || !mag_profile.is_calibrated) {
+        ESP_LOGW(TAG, "NVS empty. Provisioning experimental baseline to physical flash memory...");
+        mag_profile.offset_x = -143.5f;
+        mag_profile.offset_y = 85.0f;
+        mag_profile.offset_z = 325.0f;
+        mag_profile.is_calibrated = true; 
+        
+        // Committing the values to NVS so future boots load from storage, not source code
+        eskf_save_calibration(&mag_profile);
+    }"""
 
-#ifndef DEG_TO_RAD
-#define DEG_TO_RAD (M_PI / 180.0f)
-#endif
-"""
-
-if "#include <math.h>" not in content:
-    content = content.replace('#include "esp_dsp.h"', headers_to_inject + '\n#include "esp_dsp.h"')
+content = content.replace(old_init, new_init)
 
 with open(fusion_cpp, "w") as f:
     f.write(content)
 
-# 2. Clean up the unused TAG warning in the UI Layer
-with open(ui_cpp, "r") as f:
-    ui_content = f.read()
-
-ui_content = ui_content.replace('static const char *TAG = "UI_RENDER";', '// static const char *TAG = "UI_RENDER";')
-
-with open(ui_cpp, "w") as f:
-    f.write(ui_content)
-
-print("Successfully resolved transitive dependencies and math macros!")
+print("Successfully added NVS Factory Provisioning!")

@@ -26,6 +26,7 @@
 static const char *TAG = "ESKF_PHYSICS";
 static QueueHandle_t imu_queue = NULL;
 static ekf_imu13states *ekf13 = NULL;
+static hard_iron_profile_t mag_profile;
 
 static void eskf_physics_task(void *pvParameters) {
     imu_9dof_data_t sensor_data;
@@ -46,10 +47,12 @@ static void eskf_physics_task(void *pvParameters) {
             }
             prev_time = current_time;
 
-            // Apply specific hard-iron chassis offsets
-            sensor_data.mag_x -= (-143.5f);
-            sensor_data.mag_y -= (85.0f);
-            sensor_data.mag_z -= (325.0f);
+            // ARCHITECT FIX: Dynamic NVS Hard-Iron Compensation
+            if (mag_profile.is_calibrated) {
+                sensor_data.mag_x -= mag_profile.offset_x;
+                sensor_data.mag_y -= mag_profile.offset_y;
+                sensor_data.mag_z -= mag_profile.offset_z;
+            }
 
             static uint32_t telemetry_counter = 0;
             if (telemetry_counter++ % 50 == 0) {
@@ -106,6 +109,18 @@ void eskf_fusion_init(void) {
     
     ekf13 = new ekf_imu13states();
     ekf13->Init();
+
+    // ARCHITECT FIX: Load localized Hard-Iron footprint from Flash Memory
+    if (eskf_load_calibration(&mag_profile) != ESP_OK || !mag_profile.is_calibrated) {
+        ESP_LOGW(TAG, "NVS empty. Provisioning experimental baseline to physical flash memory...");
+        mag_profile.offset_x = -143.5f;
+        mag_profile.offset_y = 85.0f;
+        mag_profile.offset_z = 325.0f;
+        mag_profile.is_calibrated = true; 
+        
+        // Committing the values to NVS so future boots load from storage, not source code
+        eskf_save_calibration(&mag_profile);
+    }
 
     imu_queue = xQueueCreate(10, sizeof(imu_9dof_data_t));
     if (imu_queue != NULL) {
