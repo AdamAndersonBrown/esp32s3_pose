@@ -20,7 +20,7 @@ extern "C" void app_main(void) {
     imu_hal_init();
     eskf_fusion_init();
 
-    ESP_LOGI(TAG, "Architecture initialized. Starting data pipeline...");
+    ESP_LOGI(TAG, "Architecture initialized. Starting multiplexed data pipeline...");
 
     while (1) {
         imu_9dof_data_t sensor_data;
@@ -29,6 +29,6 @@ extern "C" void app_main(void) {
             eskf_fusion_queue_data(&sensor_data);
         }
         
-        vTaskDelay(15 / portTICK_PERIOD_MS);
+        vTaskDelay(pdMS_TO_TICKS(15));
     }
 }

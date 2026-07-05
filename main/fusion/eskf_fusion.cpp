@@ -53,6 +53,8 @@ static void eskf_physics_task(void *pvParameters) {
             }
             prev_time = current_time;
 
+
+
             // ARCHITECT FIX: Dynamic Field Calibration Interceptor
             if (is_calibrating && sensor_data.mag_valid) {
                 // Track min/max boundaries
