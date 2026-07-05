@@ -1,218 +1,97 @@
 import os
 
-hal_cpp = os.path.join("main", "hal", "hal_imu.cpp")
+fusion_h = os.path.join("main", "fusion", "eskf_fusion.h")
+fusion_cpp = os.path.join("main", "fusion", "eskf_fusion.cpp")
 
-hal_content = """#include "hal_imu.h"
-#include "driver/i2c.h"
-#include "esp_log.h"
-#include "sensor_hal.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+# 1. Update the Header to expose the API
+with open(fusion_h, "r") as f:
+    h_content = f.read()
 
-static const char *TAG = "HAL_IMU";
-static bool imu_initialized = false;
+if "void eskf_trigger_calibration(void);" not in h_content:
+    h_content = h_content.replace(
+        "void eskf_fusion_queue_data(imu_9dof_data_t *data);",
+        "void eskf_fusion_queue_data(imu_9dof_data_t *data);\n\n/**\n * @brief Triggers the dynamic 3D Figure-8 Hard-Iron calibration sequence.\n */\nvoid eskf_trigger_calibration(void);"
+    )
+    with open(fusion_h, "w") as f:
+        f.write(h_content)
 
-#define BSP_BMI270_ADDR     0x69
-#define BSP_BMM150_ADDR     0x10
+# 2. Inject the State Machine into the Physics Thread
+with open(fusion_cpp, "r") as f:
+    cpp_content = f.read()
 
-uint8_t i2c_read_buffer[1024];
-uint8_t i2c_write_buffer[1024];
+# Add the state variables
+if "static bool is_calibrating = false;" not in cpp_content:
+    cpp_content = cpp_content.replace(
+        "static hard_iron_profile_t mag_profile;",
+        """static hard_iron_profile_t mag_profile;
 
-#define BMI270_IF_CONF 0x6B
-#define BMI270_AUX_DEV_ID 0x4B
-#define BMI270_PWR_CONF 0x7C
-#define BMI270_PWR_CTRL 0x7D
-#define BMI270_CMD 0x7E
-#define BMI270_AUX_IF_CONFIG 0x4C
-#define BMI270_AUX_READ_ADDR 0x4D
-#define BMI270_AUX_WRITE_ADDR 0x4E
-#define BMI270_AUX_WRITE_DATA 0x4F
-#define BMI270_AUX_STATUS          0x03
-#define BMI270_AUX_DATA0           0x04
-#define BMI270_ACC_DATA0           0x0C
-#define BMI270_GYR_DATA0           0x12
-#define BMI270_ACC_CONF            0x40
-#define BMI270_ACC_RANGE           0x41
-#define BMI270_GYR_CONF            0x42
-#define BMI270_GYR_RANGE           0x43
-#define BMI270_AUX_CONF            0x44
-#define BMI270_INIT_CTRL           0x59
-#define BMI270_INIT_DATA           0x5e
-#define BMI270_INTERNAL_STATUS     0x21
+// Calibration State Machine
+static bool is_calibrating = false;
+static uint16_t calib_samples = 0;
+static float mag_min[3] = {99999.0f, 99999.0f, 99999.0f};
+static float mag_max[3] = {-99999.0f, -99999.0f, -99999.0f};"""
+    )
 
-#define BMM150_REG_POWER_CONTROL    0x4B
-#define BMM150_SHIP_ID              0x40
-#define BMM150_DATA0                0x42
+# Expose the trigger function
+if "void eskf_trigger_calibration(void)" not in cpp_content:
+    cpp_content += """
 
-extern "C" uint8_t bmi270_context_config_file[];
-extern "C" const int bmi270_context_config_file_size;
-
-esp_err_t read_bmm150_data(uint8_t addr, uint8_t *data, int length) {
-    i2c_write_buffer[0] = BMI270_AUX_READ_ADDR;
-    i2c_write_buffer[1] = addr;
-    esp_err_t err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
-    i2c_write_buffer[0] = BMI270_AUX_STATUS;
-    err = i2c_master_write_read_device(I2C_NUM_1, 0x69, i2c_write_buffer, 1, data, length, 1000);
-    i2c_write_buffer[0] = BMI270_AUX_DATA0;
-    err = i2c_master_write_read_device(I2C_NUM_1, 0x69, i2c_write_buffer, 1, data, length, 1000);
-    return err;
-}
-
-esp_err_t write_bmm150_data(uint8_t addr, uint8_t *data, int length) {
-    i2c_write_buffer[0] = BMI270_AUX_WRITE_DATA;
-    i2c_write_buffer[1] = data[0];
-    esp_err_t err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
-    i2c_write_buffer[0] = BMI270_AUX_WRITE_ADDR;
-    i2c_write_buffer[1] = addr;
-    err = i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
-    vTaskDelay(pdMS_TO_TICKS(5));
-    return err;
-}
-
-esp_err_t write_bmi270_data(uint8_t addr, uint8_t *data, int length) {
-    if (length < 32) {
-        i2c_write_buffer[0] = addr;
-        for (size_t i = 0; i < length; i++) i2c_write_buffer[1 + i] = data[i];
-        return i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 1 + length, 1000);
+void eskf_trigger_calibration(void) {
+    if (!is_calibrating) {
+        ESP_LOGW(TAG, "=== CALIBRATION MODE TRIGGERED ===");
+        ESP_LOGW(TAG, "Please rotate device in a 3D Figure-8 for 15 seconds...");
+        mag_min[0] = 99999.0f; mag_min[1] = 99999.0f; mag_min[2] = 99999.0f;
+        mag_max[0] = -99999.0f; mag_max[1] = -99999.0f; mag_max[2] = -99999.0f;
+        calib_samples = 0;
+        is_calibrating = true;
     }
-    uint8_t *temp_data = (uint8_t *)malloc(length + 4);
-    for (size_t i = 0; i < length; i++) temp_data[1 + i] = data[i];
-    temp_data[0] = addr;
-    esp_err_t err = i2c_master_write_to_device(I2C_NUM_1, 0x69, temp_data, 1 + length, 1000);
-    free(temp_data);
-    return err;
-}
-
-esp_err_t read_bmi270_data(uint8_t addr, uint8_t *data, int length) {
-    i2c_write_buffer[0] = addr;
-    return i2c_master_write_read_device(I2C_NUM_1, 0x69, i2c_write_buffer, 1, data, length, 1000);
-}
-
-esp_err_t write_bmi270_reg(uint8_t addr, uint8_t data) {
-    i2c_write_buffer[0] = addr;
-    i2c_write_buffer[1] = data;
-    return i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
-}
-
-uint8_t read_bmi270_reg(uint8_t addr, esp_err_t *err) {
-    i2c_write_buffer[0] = addr;
-    *err = i2c_master_write_read_device(I2C_NUM_1, 0x69, i2c_write_buffer, 1, &i2c_write_buffer[16], 1, 1000);
-    return i2c_write_buffer[16];
-}
-
-esp_err_t imu_hal_init(void) {
-    ESP_LOGI(TAG, "Initializing 9-DoF Hardware Abstraction Layer (Legacy I2C)...");
-
-    i2c_config_t i2c_conf = {};
-    i2c_conf.mode = I2C_MODE_MASTER;
-    i2c_conf.sda_io_num = 12;
-    i2c_conf.scl_io_num = 11;
-    i2c_conf.sda_pullup_en = true;
-    i2c_conf.scl_pullup_en = true;
-    i2c_conf.master.clk_speed = 400000;
-    
-    i2c_driver_delete(I2C_NUM_1);
-    i2c_param_config(I2C_NUM_1, &i2c_conf);
-    i2c_driver_install(I2C_NUM_1, i2c_conf.mode, 0, 0, 0);
-
-    uint8_t reset_cmd[2] = {0x7E, 0xB6};
-    i2c_master_write_to_device(I2C_NUM_1, 0x69, reset_cmd, 2, 1000);
-    vTaskDelay(pdMS_TO_TICKS(50));
-    
-    esp_err_t err = ESP_OK;
-    i2c_write_buffer[0] = 0x00;
-    err = i2c_master_write_read_device(I2C_NUM_1, 0x69, i2c_write_buffer, 1, i2c_read_buffer, 1, 1000);
-    
-    i2c_write_buffer[0] = BMI270_IF_CONF;
-    i2c_write_buffer[1] = 0x20;
-    i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
-    
-    i2c_write_buffer[0] = BMI270_PWR_CTRL;
-    i2c_write_buffer[1] = 0x0f;
-    i2c_master_write_to_device(I2C_NUM_1, 0x69, i2c_write_buffer, 2, 1000);
-
-    write_bmi270_reg(BMI270_PWR_CONF, 0);
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    write_bmi270_reg(BMI270_INIT_CTRL, 0x00);
-    write_bmi270_data(BMI270_INIT_DATA, bmi270_context_config_file, bmi270_context_config_file_size);
-    write_bmi270_reg(BMI270_INIT_CTRL, 0x01);
-
-    write_bmi270_reg(BMI270_PWR_CTRL, 0x0f);
-    write_bmi270_reg(BMI270_ACC_CONF, 0xA6);
-    write_bmi270_reg(BMI270_GYR_CONF, 0xA6);
-    write_bmi270_reg(BMI270_PWR_CONF, 0x02);
-    write_bmi270_reg(BMI270_AUX_CONF, 0x07);
-    write_bmi270_reg(BMI270_ACC_RANGE, 0x03);
-    write_bmi270_reg(BMI270_GYR_RANGE, 0x00);
-
-    write_bmi270_reg(BMI270_IF_CONF, 0x20);
-    vTaskDelay(pdMS_TO_TICKS(5));
-
-    write_bmi270_reg(BMI270_AUX_DEV_ID, 0x20);
-    write_bmi270_reg(BMI270_AUX_IF_CONFIG, 0x80);
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    uint8_t pwr_ctrl = 0x01; write_bmm150_data(BMM150_REG_POWER_CONTROL, &pwr_ctrl, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    uint8_t rep_xy = 0x17; write_bmm150_data(0x51, &rep_xy, 1);
-    uint8_t rep_z = 0x52; write_bmm150_data(0x52, &rep_z, 1);
-
-    uint8_t op_mode = 0x00; write_bmm150_data(0x4C, &op_mode, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    write_bmi270_reg(BMI270_IF_CONF, 0x00);
-    write_bmi270_reg(BMI270_AUX_READ_ADDR, BMM150_DATA0);
-    write_bmi270_reg(BMI270_IF_CONF, 0x20);
-    write_bmi270_reg(BMI270_AUX_IF_CONFIG, 0x03);
-
-    ESP_LOGI(TAG, "BMI270 & BMM150 initialization is done");
-    imu_initialized = true;
-    return ESP_OK;
-}
-
-esp_err_t imu_hal_read_9dof(imu_9dof_data_t *data) {
-    if (!data || !imu_initialized) return ESP_ERR_INVALID_STATE;
-
-    int16_t sensors_data[32];
-    esp_err_t err = read_bmi270_data(BMI270_AUX_DATA0, (uint8_t *)sensors_data, 20);
-    if (err != ESP_OK) return err;
-
-    BodyVectors body = stage1_hal_transform(sensors_data);
-    
-    data->acc_x = body.accel[0];
-    data->acc_y = body.accel[1];
-    data->acc_z = body.accel[2];
-    
-    data->gyr_x = body.gyro[0];
-    data->gyr_y = body.gyro[1];
-    data->gyr_z = body.gyro[2];
-    
-    data->mag_x = body.mag[0];
-    data->mag_y = body.mag[1];
-    data->mag_z = body.mag[2];
-
-    static float prev_mag[3] = {0, 0, 0};
-    static uint8_t deadlock_counter = 0;
-    
-    if (body.mag[0] == prev_mag[0] && body.mag[1] == prev_mag[1] && body.mag[2] == prev_mag[2]) {
-        if (deadlock_counter < 255) deadlock_counter++;
-        if (deadlock_counter > 50) data->mag_valid = false;
-    } else {
-        deadlock_counter = 0;
-        data->mag_valid = true;
-    }
-    
-    prev_mag[0] = body.mag[0];
-    prev_mag[1] = body.mag[1];
-    prev_mag[2] = body.mag[2];
-
-    return ESP_OK;
 }
 """
 
-with open(hal_cpp, "w") as f:
-    f.write(hal_content)
+# Inject the interception logic inside the while loop
+calib_logic = """            // ARCHITECT FIX: Dynamic Field Calibration Interceptor
+            if (is_calibrating && sensor_data.mag_valid) {
+                // Track min/max boundaries
+                if (sensor_data.mag_x < mag_min[0]) mag_min[0] = sensor_data.mag_x;
+                if (sensor_data.mag_x > mag_max[0]) mag_max[0] = sensor_data.mag_x;
+                
+                if (sensor_data.mag_y < mag_min[1]) mag_min[1] = sensor_data.mag_y;
+                if (sensor_data.mag_y > mag_max[1]) mag_max[1] = sensor_data.mag_y;
+                
+                if (sensor_data.mag_z < mag_min[2]) mag_min[2] = sensor_data.mag_z;
+                if (sensor_data.mag_z > mag_max[2]) mag_max[2] = sensor_data.mag_z;
+                
+                calib_samples++;
+                
+                // Print a progress heartbeat every ~1 second (assuming ~60Hz loop)
+                if (calib_samples % 60 == 0) {
+                    ESP_LOGI(TAG, "Calibrating... [%d/900 samples collected]", calib_samples);
+                }
 
-print("Successfully rolled back the HAL to the legacy I2C driver to resolve the BSP conflict!")
+                // 900 samples @ ~60Hz = ~15 seconds of Figure-8 rotation
+                if (calib_samples >= 900) {
+                    mag_profile.offset_x = (mag_max[0] + mag_min[0]) / 2.0f;
+                    mag_profile.offset_y = (mag_max[1] + mag_min[1]) / 2.0f;
+                    mag_profile.offset_z = (mag_max[2] + mag_min[2]) / 2.0f;
+                    mag_profile.is_calibrated = true;
+                    
+                    eskf_save_calibration(&mag_profile);
+                    is_calibrating = false;
+                    
+                    ESP_LOGI(TAG, "=== CALIBRATION COMPLETE ===");
+                    ESP_LOGI(TAG, "New Hard-Iron Center -> X:%.1f | Y:%.1f | Z:%.1f", 
+                             mag_profile.offset_x, mag_profile.offset_y, mag_profile.offset_z);
+                }
+                
+                // Skip the ESKF math and UI updates while collecting data
+                continue; 
+            }
+
+            // ARCHITECT FIX: Dynamic NVS Hard-Iron Compensation"""
+
+cpp_content = cpp_content.replace("            // ARCHITECT FIX: Dynamic NVS Hard-Iron Compensation", calib_logic)
+
+with open(fusion_cpp, "w") as f:
+    f.write(cpp_content)
+
+print("Successfully injected the Dynamic Field Calibration State Machine!")

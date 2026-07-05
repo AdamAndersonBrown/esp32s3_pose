@@ -22,6 +22,11 @@ void eskf_fusion_init(void);
  */
 void eskf_fusion_queue_data(imu_9dof_data_t *data);
 
+/**
+ * @brief Triggers the dynamic 3D Figure-8 Hard-Iron calibration sequence.
+ */
+void eskf_trigger_calibration(void);
+
 #ifdef __cplusplus
 }
 #endif

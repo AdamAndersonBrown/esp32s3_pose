@@ -28,6 +28,12 @@ static QueueHandle_t imu_queue = NULL;
 static ekf_imu13states *ekf13 = NULL;
 static hard_iron_profile_t mag_profile;
 
+// Calibration State Machine
+static bool is_calibrating = false;
+static uint16_t calib_samples = 0;
+static float mag_min[3] = {99999.0f, 99999.0f, 99999.0f};
+static float mag_max[3] = {-99999.0f, -99999.0f, -99999.0f};
+
 static void eskf_physics_task(void *pvParameters) {
     imu_9dof_data_t sensor_data;
     quaternion_t current_q = {1.0f, 0.0f, 0.0f, 0.0f};
@@ -46,6 +52,44 @@ static void eskf_physics_task(void *pvParameters) {
                 dt = (current_time - prev_time) / 160000000.0;
             }
             prev_time = current_time;
+
+            // ARCHITECT FIX: Dynamic Field Calibration Interceptor
+            if (is_calibrating && sensor_data.mag_valid) {
+                // Track min/max boundaries
+                if (sensor_data.mag_x < mag_min[0]) mag_min[0] = sensor_data.mag_x;
+                if (sensor_data.mag_x > mag_max[0]) mag_max[0] = sensor_data.mag_x;
+                
+                if (sensor_data.mag_y < mag_min[1]) mag_min[1] = sensor_data.mag_y;
+                if (sensor_data.mag_y > mag_max[1]) mag_max[1] = sensor_data.mag_y;
+                
+                if (sensor_data.mag_z < mag_min[2]) mag_min[2] = sensor_data.mag_z;
+                if (sensor_data.mag_z > mag_max[2]) mag_max[2] = sensor_data.mag_z;
+                
+                calib_samples++;
+                
+                // Print a progress heartbeat every ~1 second (assuming ~60Hz loop)
+                if (calib_samples % 60 == 0) {
+                    ESP_LOGI(TAG, "Calibrating... [%d/900 samples collected]", calib_samples);
+                }
+
+                // 900 samples @ ~60Hz = ~15 seconds of Figure-8 rotation
+                if (calib_samples >= 900) {
+                    mag_profile.offset_x = (mag_max[0] + mag_min[0]) / 2.0f;
+                    mag_profile.offset_y = (mag_max[1] + mag_min[1]) / 2.0f;
+                    mag_profile.offset_z = (mag_max[2] + mag_min[2]) / 2.0f;
+                    mag_profile.is_calibrated = true;
+                    
+                    eskf_save_calibration(&mag_profile);
+                    is_calibrating = false;
+                    
+                    ESP_LOGI(TAG, "=== CALIBRATION COMPLETE ===");
+                    ESP_LOGI(TAG, "New Hard-Iron Center -> X:%.1f | Y:%.1f | Z:%.1f", 
+                             mag_profile.offset_x, mag_profile.offset_y, mag_profile.offset_z);
+                }
+                
+                // Skip the ESKF math and UI updates while collecting data
+                continue; 
+            }
 
             // ARCHITECT FIX: Dynamic NVS Hard-Iron Compensation
             if (mag_profile.is_calibrated) {
@@ -131,5 +175,17 @@ void eskf_fusion_init(void) {
 void eskf_fusion_queue_data(imu_9dof_data_t *data) {
     if (imu_queue != NULL) {
         xQueueSend(imu_queue, data, 0);
+    }
+}
+
+
+void eskf_trigger_calibration(void) {
+    if (!is_calibrating) {
+        ESP_LOGW(TAG, "=== CALIBRATION MODE TRIGGERED ===");
+        ESP_LOGW(TAG, "Please rotate device in a 3D Figure-8 for 15 seconds...");
+        mag_min[0] = 99999.0f; mag_min[1] = 99999.0f; mag_min[2] = 99999.0f;
+        mag_max[0] = -99999.0f; mag_max[1] = -99999.0f; mag_max[2] = -99999.0f;
+        calib_samples = 0;
+        is_calibrating = true;
     }
 }
