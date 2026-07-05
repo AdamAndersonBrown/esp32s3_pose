@@ -386,7 +386,10 @@ static void draw_3d_image_task(void *arg)
         // Vectors are normalized to 1.0, so R_m represents radians squared.
         // Accel: ~2 degrees expected noise -> 0.001
         // Mag:  ~10 degrees expected environmental distortion -> 0.03
-        float R_m[6] = {0.001f, 0.001f, 0.001f, 0.03f, 0.03f, 0.03f};
+        // ARCHITECT FIX: Kinetic Acceleration Tolerance
+        // Raised Accel covariance to 0.5 to reject centripetal hand movement.
+        // Gyro now handles dynamic 3D tilt; Accel handles long-term gravity leveling.
+        float R_m[6] = {0.5f, 0.5f, 0.5f, 0.03f, 0.03f, 0.03f};
 
     static SensorCalibrator calibrator;
 
