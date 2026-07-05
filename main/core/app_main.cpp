@@ -379,7 +379,14 @@ static void draw_3d_image_task(void *arg)
     float dt = 0;
     static float prev_time = 0;
     float current_time = dsp_get_cpu_cycle_count();
-    float R_m[6] = {0.01, 0.01, 0.01, 0.01, 0.01, 0.01};
+    // ARCHITECT FIX: Covariance Tuning
+        // Accel (0-2): 0.1 (Trusted for gravity)
+        // Mag (3-5): 5.0 (High variance, acts as a slow leash for gyro drift)
+        // ARCHITECT FIX: Geometric Covariance Tuning
+        // Vectors are normalized to 1.0, so R_m represents radians squared.
+        // Accel: ~2 degrees expected noise -> 0.001
+        // Mag:  ~10 degrees expected environmental distortion -> 0.03
+        float R_m[6] = {0.001f, 0.001f, 0.001f, 0.03f, 0.03f, 0.03f};
 
     static SensorCalibrator calibrator;
 
@@ -472,6 +479,53 @@ static void draw_3d_image_task(void *arg)
 
         // matrix mul cube_matrix * transformation_matrix = transformed_cube
         transformed_image = matrix_3d * T;
+
+        // ARCHITECT DIAGNOSTIC: Filter Divergence Check
+        // Compare the Raw Magnetometer Heading against the EKF's Internal Belief
+        static uint8_t diag_tick = 0;
+        if (++diag_tick % 50 == 0) {
+            float raw_yaw = atan2(calib_mag[1], calib_mag[0]) * (180.0f / M_PI);
+            
+            float q0 = ekf13->X.data[0];
+            float q1 = ekf13->X.data[1];
+            float q2 = ekf13->X.data[2];
+            float q3 = ekf13->X.data[3];
+            // Standard aerospace Z-Y-X yaw extraction from quaternion
+            float ekf_yaw = atan2(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3)) * (180.0f / M_PI);
+            
+            ESP_LOGW(TAG, "DIAGNOSTIC -> Raw Mag Yaw: %0.1f deg | EKF Yaw: %0.1f deg", raw_yaw, ekf_yaw);
+
+        // ARCHITECT DIAGNOSTIC: Magnetic Spherical Validity Monitor
+        // The magnitude (radius) of the magnetic vector should remain perfectly constant.
+        // If the radius expands or contracts when the device is tilted, the Z-axis 
+        // calibration is failing and warping the EKF virtual horizon.
+        
+        static float baseline_radius = 0.0f;
+        static uint32_t monitor_tick = 0;
+        
+        // Calculate the current 3D radius (Pythagorean theorem)
+        float current_radius = sqrt((calib_mag[0] * calib_mag[0]) + 
+                                    (calib_mag[1] * calib_mag[1]) + 
+                                    (calib_mag[2] * calib_mag[2]));
+                                    
+        // Latch the baseline radius when sitting flat after boot
+        if (baseline_radius == 0.0f && current_radius > 10.0f && monitor_tick > 100) {
+            baseline_radius = current_radius;
+            ESP_LOGI(TAG, "MAGNETIC MONITOR: Baseline Radius Locked at %.1f", baseline_radius);
+        }
+        monitor_tick++;
+
+        if (baseline_radius > 0.0f && monitor_tick % 25 == 0) {
+            float deviation = (fabs(current_radius - baseline_radius) / baseline_radius) * 100.0f;
+            
+            if (deviation > 10.0f) {
+                ESP_LOGE(TAG, "CALIBRATION INVALID: Sphere Warped! Radius: %.1f (Deviation: %.1f%%)", current_radius, deviation);
+            } else if (monitor_tick % 100 == 0) {
+                // Print a heartbeat every few seconds to show it is tracking cleanly
+                ESP_LOGI(TAG, "Magnetic Radius Stable: %.1f (Deviation: %.1f%%)", current_radius, deviation);
+            }
+        }
+        }
         // matrix mul transformed_cube * perspective_matrix = projected_cube
         projected_image = transformed_image * perspective_matrix;
 
