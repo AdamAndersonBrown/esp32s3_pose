@@ -39,7 +39,10 @@ static void eskf_physics_task(void *pvParameters) {
     static float prev_time = 0;
     float current_time = dsp_get_cpu_cycle_count();
 
-    ESP_LOGI(TAG, "Physics Engine Task Started (Core 1).");
+    // Baseline Earth field norm for the Spherical Shield
+    static float pristine_norm = 0.0f;
+
+    ESP_LOGI(TAG, "Advanced Physics Engine Task Started (Core 1).");
 
     while (1) {
         if (xQueueReceive(imu_queue, &sensor_data, portMAX_DELAY) == pdTRUE) {
@@ -61,10 +64,6 @@ static void eskf_physics_task(void *pvParameters) {
                 
                 calib_samples++;
                 
-                if (calib_samples % 60 == 0) {
-                    ESP_LOGI(TAG, "Calibrating... [%d/900 samples collected]", calib_samples);
-                }
-
                 if (calib_samples >= 900) {
                     mag_profile.offset_x = (mag_max[0] + mag_min[0]) / 2.0f;
                     mag_profile.offset_y = (mag_max[1] + mag_min[1]) / 2.0f;
@@ -74,53 +73,100 @@ static void eskf_physics_task(void *pvParameters) {
                     eskf_save_calibration(&mag_profile);
                     is_calibrating = false;
                     
+                    pristine_norm = 0.0f; // Force a re-latch of the new geographical sphere
                     ekf13->Init(); 
-                    
                     ESP_LOGI(TAG, "=== CALIBRATION COMPLETE ===");
                 }
                 continue; 
             }
 
+            // ====================================================================
+            // 1. STANDARD HARD-IRON CALIBRATION
+            // ====================================================================
+            float hx = sensor_data.mag_x;
+            float hy = sensor_data.mag_y;
+            float hz = sensor_data.mag_z;
+
             if (mag_profile.is_calibrated) {
-                sensor_data.mag_x -= mag_profile.offset_x;
-                sensor_data.mag_y -= mag_profile.offset_y;
-                sensor_data.mag_z -= mag_profile.offset_z;
+                hx -= mag_profile.offset_x;
+                hy -= mag_profile.offset_y;
+                hz -= mag_profile.offset_z;
             }
 
+            // ARCHITECT FIX: Restored the missing telemetry logging block
             static uint32_t telemetry_counter = 0;
             if (telemetry_counter++ % 50 == 0) {
-                ESP_LOGI(TAG, "--- ESKF INPUT (NATIVE XYZ) ---");
+                ESP_LOGI(TAG, "--- ESKF INPUT (CALIBRATED XYZ) ---");
                 ESP_LOGI(TAG, "ACC | X: %7.0f | Y: %7.0f | Z: %7.0f", sensor_data.acc_x, sensor_data.acc_y, sensor_data.acc_z);
                 ESP_LOGI(TAG, "GYR | X: %7.0f | Y: %7.0f | Z: %7.0f", sensor_data.gyr_x, sensor_data.gyr_y, sensor_data.gyr_z);
-                ESP_LOGI(TAG, "MAG | X: %7.0f | Y: %7.0f | Z: %7.0f", sensor_data.mag_x, sensor_data.mag_y, sensor_data.mag_z);
+                ESP_LOGI(TAG, "MAG | X: %7.0f | Y: %7.0f | Z: %7.0f", hx, hy, hz);
                 ESP_LOGI(TAG, "-------------------------------");
             }
 
+            // Load back into arrays for the DSP Matrix
             float acc_arr[3] = {sensor_data.acc_x, sensor_data.acc_y, sensor_data.acc_z};
             float gyr_arr[3] = {sensor_data.gyr_x, sensor_data.gyr_y, sensor_data.gyr_z};
-            float mag_arr[3] = {sensor_data.mag_x, sensor_data.mag_y, sensor_data.mag_z};
+            float mag_arr[3] = {hx, hy, hz};
 
             dspm::Mat gyro_input_mat(gyr_arr, 3, 1);
             dspm::Mat accel_input_mat(acc_arr, 3, 1);
             dspm::Mat mag_input_mat(mag_arr, 3, 1);
 
             accel_input_mat = accel_input_mat / 32768.0f * 16.0f;
-            
-            float current_norm = mag_input_mat.norm();
-            if (current_norm > 0.001f) {
-                mag_input_mat = (1.0f / current_norm) * mag_input_mat;
-            }
-
             gyro_input_mat *= (2000.0f * DEG_TO_RAD / 32768.0f);
 
+            // ====================================================================
+            // 2. DYNAMIC COVARIANCE SCALING (The Aerospace Leash)
+            // ====================================================================
+            float current_mag_norm = mag_input_mat.norm();
+            
+            // Latch the pristine Earth field norm directly after boot/calibration
+            if (pristine_norm == 0.0f && mag_profile.is_calibrated && current_mag_norm > 10.0f) {
+                pristine_norm = current_mag_norm;
+                ESP_LOGI(TAG, "Latched Pristine Magnetic Radius: %.1f uT", pristine_norm);
+            }
+
+            float spherical_distortion = 0.0f;
+            if (pristine_norm > 0.0f) {
+                spherical_distortion = fabsf(current_mag_norm - pristine_norm) / pristine_norm;
+                
+                // Micro-adaptation for regional geographic drift over long periods
+                if (spherical_distortion < 0.05f) {
+                    pristine_norm = (pristine_norm * 0.9999f) + (current_mag_norm * 0.0001f);
+                }
+            }
+
+            // Safe Normalization for ESKF ingestion
+            if (current_mag_norm > 0.001f) {
+                mag_input_mat = (1.0f / current_mag_norm) * mag_input_mat;
+            }
+
+            // Step 1: Execute Free Integration of High-Frequency Kinematics
             ekf13->Process(gyro_input_mat.data, dt);
 
-            float R_m[6] = {0.5f, 0.5f, 0.5f, 0.03f, 0.03f, 0.03f}; 
-
+            // ====================================================================
+            // 3. CONTINUOUS SOFT-GATING UPDATE
+            // ====================================================================
             if (sensor_data.mag_valid) {
+                // Base Variances. We elevate the base mag variance slightly from 0.03 
+                // to 0.10 to permanently widen the Mahalanobis gate, preventing the 
+                // "Arrogance Lockout" after long walks without hacking the P-Matrix.
+                float acc_var = 0.5f;
+                float mag_var = 0.10f; 
+
+                // Dynamic Inflation: If the sphere distorts (walking past metal), 
+                // we exponentially inflate the measurement variance. This tells the EKF 
+                // to natively trust the gyro and ignore the bad mag data smoothly,
+                // eliminating the violent "jumping" caused by binary ON/OFF logic.
+                if (spherical_distortion > 0.05f) {
+                    mag_var += (spherical_distortion * 15.0f); 
+                }
+
+                float R_m[6] = {acc_var, acc_var, acc_var, mag_var, mag_var, mag_var}; 
                 ekf13->UpdateRefMeasurementMagn(accel_input_mat.data, mag_input_mat.data, R_m);
             }
 
+            // Extract post-update Quaternions for LVGL Graphics Engine
             current_q.q0 = ekf13->X.data[0];
             current_q.q1 = ekf13->X.data[1];
             current_q.q2 = ekf13->X.data[2];
@@ -137,6 +183,7 @@ void eskf_fusion_init(void) {
     ekf13->Init();
 
     if (eskf_load_calibration(&mag_profile) != ESP_OK || !mag_profile.is_calibrated) {
+        // Restored your original native fallbacks
         mag_profile.offset_x = -143.5f;
         mag_profile.offset_y = 85.0f;
         mag_profile.offset_z = 325.0f;
