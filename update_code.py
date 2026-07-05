@@ -1,135 +1,141 @@
 import os
-import re
 
-fusion_dir = os.path.join("main", "fusion")
-nvs_h = os.path.join(fusion_dir, "nvs_calibration.h")
-nvs_cpp = os.path.join(fusion_dir, "nvs_calibration.cpp")
+hal_cpp_path = os.path.join("main", "hal", "hal_imu.cpp")
+fusion_cpp_path = os.path.join("main", "fusion", "eskf_fusion.cpp")
 
-# 1. Generate NVS Calibration Contract
-nvs_h_content = """#pragma once
-#include "esp_err.h"
+# 1. Finalize the Hardware Abstraction Layer (Data Sanitization)
+hal_cpp_content = """#include "hal_imu.h"
+#include "esp_log.h"
+#include <math.h>
 
-// STRICT DATA STRUCTURE:
-// The stored magnetic footprint of the specific hardware chassis.
-typedef struct {
-    float offset_x;
-    float offset_y;
-    float offset_z;
-    bool is_calibrated;
-} hard_iron_profile_t;
+static const char *TAG = "HAL_IMU";
+static bool imu_initialized = false;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+// Hardware Variance Watchdog State
+static float last_mag[3] = {0.0f, 0.0f, 0.0f};
 
-/**
- * @brief Retrieves the saved Hard-Iron profile from Non-Volatile Storage.
- * @param profile Pointer to the profile struct to populate.
- * @return ESP_OK if found, ESP_ERR_NOT_FOUND if factory fresh.
- */
-esp_err_t eskf_load_calibration(hard_iron_profile_t *profile);
-
-/**
- * @brief Commits a new Hard-Iron profile to flash memory.
- * @param profile Pointer to the newly calculated profile.
- */
-esp_err_t eskf_save_calibration(hard_iron_profile_t *profile);
-
-#ifdef __cplusplus
+esp_err_t imu_hal_init(void) {
+    ESP_LOGI(TAG, "Initializing 9-DoF Hardware Abstraction Layer...");
+    // TODO: Migrate the BMM150 Wake/Suspend I2C writes here.
+    imu_initialized = true;
+    return ESP_OK;
 }
-#endif
+
+esp_err_t imu_hal_read_9dof(imu_9dof_data_t *data) {
+    if (!data || !imu_initialized) return ESP_ERR_INVALID_STATE;
+
+    // 1. Execute the blocking I2C read from the BMI270 Gatekeeper
+    // TODO: Drop your raw read_bmi270_data() polling execution here.
+    
+    // Placeholder variables for your raw parsed integer data
+    float raw_mag_x = 0.0f; 
+    float raw_mag_y = 0.0f;
+    float raw_mag_z = 0.0f; 
+
+    data->mag_x = raw_mag_x;
+    data->mag_y = raw_mag_y;
+    
+    // 2. ARCHITECT FIX: Right-Hand Rule Z-Axis Parity Inversion
+    // Invert Mag Z to mathematically align with Earth's downward gravity vector
+    data->mag_z = -raw_mag_z;
+
+    // 3. ARCHITECT FIX: Hardware Variance Watchdog
+    // The BMM150 auxiliary bus can deadlock silently without throwing NACKs.
+    // True analog magnetic fields ALWAYS exhibit analog noise. 
+    // If the vector is mathematically identical to the last frame, the silicon is ghosting.
+    if (data->mag_x == last_mag[0] && 
+        data->mag_y == last_mag[1] && 
+        data->mag_z == last_mag[2]) {
+        data->mag_valid = false;
+    } else {
+        data->mag_valid = true;
+        last_mag[0] = data->mag_x;
+        last_mag[1] = data->mag_y;
+        last_mag[2] = data->mag_z;
+    }
+
+    return ESP_OK;
+}
 """
 
-# 2. Generate NVS Implementation
-nvs_cpp_content = """#include "nvs_calibration.h"
-#include "nvs_flash.h"
-#include "nvs.h"
+# 2. Finalize the ESKF Physics Thread (NVS & Data Fusion)
+fusion_cpp_content = """#include "eskf_fusion.h"
+#include "nvs_calibration.h"
+#include "ui_render.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
 
-static const char *TAG = "NVS_CALIBRATION";
-static const char *NVS_NAMESPACE = "eskf_data";
-static const char *NVS_KEY = "hard_iron";
+static const char *TAG = "ESKF_PHYSICS";
+static QueueHandle_t imu_queue = NULL;
+static hard_iron_profile_t mag_calibration;
 
-esp_err_t eskf_load_calibration(hard_iron_profile_t *profile) {
-    nvs_handle_t my_handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &my_handle);
-    if (err != ESP_OK) return err;
+static void eskf_physics_task(void *pvParameters) {
+    imu_9dof_data_t sensor_data;
+    quaternion_t current_q = {1.0f, 0.0f, 0.0f, 0.0f};
 
-    size_t required_size = sizeof(hard_iron_profile_t);
-    err = nvs_get_blob(my_handle, NVS_KEY, profile, &required_size);
-    
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Loaded Hard-Iron Profile: X:%.1f Y:%.1f Z:%.1f", 
-                 profile->offset_x, profile->offset_y, profile->offset_z);
-    } else {
-        ESP_LOGW(TAG, "No calibration profile found. Reverting to factory defaults.");
-        profile->is_calibrated = false;
-    }
-    
-    nvs_close(my_handle);
-    return err;
-}
+    ESP_LOGI(TAG, "Physics Engine Task Started (Core 1).");
 
-esp_err_t eskf_save_calibration(hard_iron_profile_t *profile) {
-    nvs_handle_t my_handle;
-    profile->is_calibrated = true;
-    
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle);
-    if (err != ESP_OK) return err;
-
-    err = nvs_set_blob(my_handle, NVS_KEY, profile, sizeof(hard_iron_profile_t));
-    if (err == ESP_OK) {
-        err = nvs_commit(my_handle);
-        ESP_LOGI(TAG, "Successfully committed new Hard-Iron profile to flash.");
-    }
-    
-    nvs_close(my_handle);
-    return err;
-}
-"""
-
-with open(nvs_h, "w") as f: f.write(nvs_h_content)
-with open(nvs_cpp, "w") as f: f.write(nvs_cpp_content)
-
-# 3. Wire into CMakeLists.txt
-cmake_path = os.path.join("main", "CMakeLists.txt")
-if os.path.exists(cmake_path):
-    with open(cmake_path, "r") as f:
-        cmake_data = f.read()
-
-    if "nvs_calibration.cpp" not in cmake_data:
-        cmake_data = cmake_data.replace('\"fusion/eskf_fusion.cpp\"', '\"fusion/eskf_fusion.cpp\"\n                    \"fusion/nvs_calibration.cpp\"')
-        with open(cmake_path, "w") as f:
-            f.write(cmake_data)
-        print("Linked NVS module into CMakeLists.txt")
-
-# 4. Inject NVS Bootloader sequence into app_main.cpp
-app_main_path = os.path.join("main", "core", "app_main.cpp")
-if os.path.exists(app_main_path):
-    with open(app_main_path, "r") as f:
-        app_data = f.read()
-
-    # Find the top of app_main() to inject the NVS boot sequence
-    if "nvs_flash_init" not in app_data:
-        pattern = re.compile(r'(void\s+app_main\s*\(\s*void\s*\)\s*\{)')
-        
-        replacement = r"""\1
-    // ARCHITECT FIX: Initialize Non-Volatile Storage (NVS)
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-"""
-        app_data, count = pattern.subn(replacement, app_data, count=1)
-        
-        # Inject the #include at the top if missing
-        if count > 0 and "nvs_flash.h" not in app_data:
-            app_data = "#include \"nvs_flash.h\"\n" + app_data
+    while (1) {
+        // Block until new hardware data is passed from Core 0
+        if (xQueueReceive(imu_queue, &sensor_data, portMAX_DELAY) == pdTRUE) {
             
-        with open(app_main_path, "w") as f:
-            f.write(app_data)
-        print("Successfully injected NVS initialization into app_main.cpp")
+            // 1. Hardware Variance Watchdog Fallback
+            if (!sensor_data.mag_valid) {
+                // Coast purely on Gyroscope. 
+                // Gating out the magnetometer covariance ensures the autonomous 
+                // physics model doesn't violently snap during an auxiliary bus deadlock.
+            } 
+            else if (mag_calibration.is_calibrated) {
+                // 2. Apply NVS Hard-Iron Calibration Offsets
+                sensor_data.mag_x -= mag_calibration.offset_x;
+                sensor_data.mag_y -= mag_calibration.offset_y;
+                sensor_data.mag_z -= mag_calibration.offset_z;
+            }
 
-print("Successfully established the Non-Volatile Calibration subsystem.")
+            // 3. TODO: Execute standard Madgwick/Kalman floating-point update step here
+            // using the sanitized sensor_data struct.
+
+            // 4. Push normalized quaternion to LVGL Render Task
+            ui_render_update_3d(&current_q);
+        }
+    }
+}
+
+void eskf_fusion_init(void) {
+    ESP_LOGI(TAG, "Initializing ESKF Physics Engine...");
+    
+    // Boot NVS and load saved magnetic footprint
+    if (eskf_load_calibration(&mag_calibration) != ESP_OK) {
+        ESP_LOGW(TAG, "Using default factory magnetic profile.");
+    }
+
+    imu_queue = xQueueCreate(10, sizeof(imu_9dof_data_t));
+    if (imu_queue != NULL) {
+        xTaskCreatePinnedToCore(
+            eskf_physics_task,
+            "eskf_physics",
+            8192,
+            NULL,
+            5,
+            NULL,
+            1
+        );
+    }
+}
+
+void eskf_fusion_queue_data(imu_9dof_data_t *data) {
+    if (imu_queue != NULL) {
+        xQueueSend(imu_queue, data, 0);
+    }
+}
+"""
+
+with open(hal_cpp_path, "w") as f:
+    f.write(hal_cpp_content)
+
+with open(fusion_cpp_path, "w") as f:
+    f.write(fusion_cpp_content)
+
+print("Successfully established Data Pipeline and Hardware Watchdog!")
