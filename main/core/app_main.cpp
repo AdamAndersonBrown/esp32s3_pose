@@ -1,3 +1,4 @@
+#include "nvs_flash.h"
 #include "driver/i2c.h"
 /*
  * SPDX-FileCopyrightText: 2025 Espressif Systems (Shanghai) CO LTD
@@ -549,6 +550,14 @@ static void draw_3d_image_task(void *arg)
 image_3d_matrix_t image;
 void app_main(void)
 {
+    // ARCHITECT FIX: Initialize Non-Volatile Storage (NVS)
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
     ekf13 = new ekf_imu13states();
     ekf13->Init();
 

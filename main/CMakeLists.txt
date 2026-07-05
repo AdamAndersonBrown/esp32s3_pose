@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
                     "hal/hal_imu.cpp"
                     "fusion/eskf_fusion.cpp"
+                    "fusion/nvs_calibration.cpp"
                     "ui/ui_render.cpp" 
         "core/app_main.cpp"
         "core/bmi270_context.c"
