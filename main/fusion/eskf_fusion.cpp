@@ -95,14 +95,18 @@ static void eskf_physics_task(void *pvParameters) {
                 hz -= mag_profile.offset_z;
             }
 
-            // ARCHITECT FIX: Restored the missing telemetry logging block
+            // ARCHITECT FIX: Pure CSV Telemetry Stream for R Matrix Extraction
             static uint32_t telemetry_counter = 0;
             if (telemetry_counter++ % 50 == 0) {
-                ESP_LOGI(TAG, "--- ESKF INPUT (CALIBRATED XYZ) ---");
-                ESP_LOGI(TAG, "ACC | X: %7.0f | Y: %7.0f | Z: %7.0f", sensor_data.acc_x, sensor_data.acc_y, sensor_data.acc_z);
-                ESP_LOGI(TAG, "GYR | X: %7.0f | Y: %7.0f | Z: %7.0f", sensor_data.gyr_x, sensor_data.gyr_y, sensor_data.gyr_z);
-                ESP_LOGI(TAG, "MAG | X: %7.0f | Y: %7.0f | Z: %7.0f", hx, hy, hz);
-                ESP_LOGI(TAG, "-------------------------------");
+                // Print the CSV header on the very first frame
+                if (telemetry_counter == 1) {
+                    printf("AccX,AccY,AccZ,GyrX,GyrY,GyrZ,MagX,MagY,MagZ\n");
+                }
+                // Stream pristine, comma-separated hardware telemetry
+                printf("%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f\n", 
+                       sensor_data.acc_x, sensor_data.acc_y, sensor_data.acc_z,
+                       sensor_data.gyr_x, sensor_data.gyr_y, sensor_data.gyr_z,
+                       hx, hy, hz);
             }
 
             // Load back into arrays for the DSP Matrix
@@ -150,18 +154,25 @@ static void eskf_physics_task(void *pvParameters) {
             // 3. CONTINUOUS SOFT-GATING UPDATE
             // ====================================================================
             if (sensor_data.mag_valid) {
-                // Base Variances. We elevate the base mag variance slightly from 0.03 
-                // to 0.10 to permanently widen the Mahalanobis gate, preventing the 
-                // "Arrogance Lockout" after long walks without hacking the P-Matrix.
-                float acc_var = 0.5f;
-                float mag_var = 0.10f; 
+                // ARCHITECT FIX: Empirically Derived Base Variances (Static Noise Floor)
+                float acc_var = 0.001f;
+                float mag_var = 0.001f; 
 
-                // Dynamic Inflation: If the sphere distorts (walking past metal), 
-                // we exponentially inflate the measurement variance. This tells the EKF 
-                // to natively trust the gyro and ignore the bad mag data smoothly,
-                // eliminating the violent "jumping" caused by binary ON/OFF logic.
+                // ARCHITECT FIX: Adaptive ESKF (A-ESKF) - Dynamic Covariance Scaling
+                
+                // 1. Accelerometer Inflation (Centripetal & Kinetic Noise Rejection)
+                // Earth gravity is exactly 1.0G. Any deviation indicates kinetic movement.
+                float current_acc_norm = accel_input_mat.norm();
+                float acc_distortion = fabsf(current_acc_norm - 1.0f);
+                if (acc_distortion > 0.05f) {
+                    // ARCHITECT FIX: Squared exponential penalty (n=2) for off-road impacts
+                    acc_var += (acc_distortion * acc_distortion * 20.0f); 
+                }
+
+                // 2. Magnetometer Inflation (EMI & Hard-Iron Rejection)
                 if (spherical_distortion > 0.05f) {
-                    mag_var += (spherical_distortion * 15.0f); 
+                    // ARCHITECT FIX: Squared exponential penalty (n=2) to reject severe powertrain EMI
+                    mag_var += (spherical_distortion * spherical_distortion * 15.0f); 
                 }
 
                 float R_m[6] = {acc_var, acc_var, acc_var, mag_var, mag_var, mag_var}; 
@@ -292,6 +303,8 @@ static void eskf_physics_task(void *pvParameters) {
             // --- TELEMETRY LOGGING ---
             static uint32_t kin_debug = 0;
             if (kin_debug++ % 20 == 0) {
+                // ARCHITECT FIX: Temporarily disabled to prevent CSV stream corruption during R-Matrix extraction
+                /*
                 if (warmup_timer < 2.0f) {
                     ESP_LOGI(TAG, "WARMUP | stat: %d | raw_acc: %.3f G | Time: %.1f/2.0s", is_stationary, raw_acc_norm, warmup_timer);
                 } else {
@@ -300,6 +313,7 @@ static void eskf_physics_task(void *pvParameters) {
                              vel_ned[0]*100.0f, vel_ned[1]*100.0f, vel_ned[2]*100.0f,
                              pos_ned[0]*100.0f, pos_ned[1]*100.0f, pos_ned[2]*100.0f);
                 }
+                */
             }
 
             // Throttle LVGL graphics ping to ~50Hz to prevent Mutex Starvation
