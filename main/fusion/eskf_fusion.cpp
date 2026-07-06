@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include <math.h>
 #include "sensor_hal.h"
 #include "cube_matrix.h"
@@ -36,8 +37,8 @@ static void eskf_physics_task(void *pvParameters) {
     imu_9dof_data_t sensor_data;
     quaternion_t current_q = {1.0f, 0.0f, 0.0f, 0.0f};
     float dt = 0;
-    static float prev_time = 0;
-    float current_time = dsp_get_cpu_cycle_count();
+    static int64_t prev_time = 0;
+    int64_t current_time_us = esp_timer_get_time();
 
     // Baseline Earth field norm for the Spherical Shield
     static float pristine_norm = 0.0f;
@@ -46,11 +47,12 @@ static void eskf_physics_task(void *pvParameters) {
 
     while (1) {
         if (xQueueReceive(imu_queue, &sensor_data, portMAX_DELAY) == pdTRUE) {
-            current_time = dsp_get_cpu_cycle_count();
-            if (current_time > prev_time) {
-                dt = (current_time - prev_time) / 160000000.0;
+            current_time_us = esp_timer_get_time();
+            if (prev_time != 0) {
+                dt = (float)(current_time_us - prev_time) / 1000000.0f;
+                if (dt <= 0.0f || dt > 0.1f) dt = 0.01f;
             }
-            prev_time = current_time;
+            prev_time = current_time_us;
 
             if (is_calibrating && sensor_data.mag_valid) {
                 if (sensor_data.mag_x < mag_min[0]) mag_min[0] = sensor_data.mag_x;
@@ -172,7 +174,139 @@ static void eskf_physics_task(void *pvParameters) {
             current_q.q2 = ekf13->X.data[2];
             current_q.q3 = ekf13->X.data[3];
 
-            ui_render_update_3d(&current_q, !sensor_data.mag_valid);
+            
+            // ====================================================================
+            // 4. STRAPDOWN KINEMATICS (High-Pass Velocity & Positional Washout)
+            // ====================================================================
+            static float vel_ned[3] = {0.0f, 0.0f, 0.0f};
+            static float pos_ned[3] = {0.0f, 0.0f, 0.0f};
+
+            float q0 = current_q.q0, q1 = current_q.q1, q2 = current_q.q2, q3 = current_q.q3;
+            float r00 = 1.0f - 2.0f * (q2*q2 + q3*q3);
+            float r01 = 2.0f * (q1*q2 - q0*q3);
+            float r02 = 2.0f * (q1*q3 + q0*q2);
+            float r10 = 2.0f * (q1*q2 + q0*q3);
+            float r11 = 1.0f - 2.0f * (q1*q1 + q3*q3);
+            float r12 = 2.0f * (q2*q3 - q0*q1);
+            float r20 = 2.0f * (q1*q3 - q0*q2);
+            float r21 = 2.0f * (q2*q3 + q0*q1);
+            float r22 = 1.0f - 2.0f * (q1*q1 + q2*q2);
+
+            float raw_ax = sensor_data.acc_x / 32768.0f * 16.0f;
+            float raw_ay = sensor_data.acc_y / 32768.0f * 16.0f;
+            float raw_az = sensor_data.acc_z / 32768.0f * 16.0f;
+
+            float raw_gx = sensor_data.gyr_x * (2000.0f / 32768.0f);
+            float raw_gy = sensor_data.gyr_y * (2000.0f / 32768.0f);
+            float raw_gz = sensor_data.gyr_z * (2000.0f / 32768.0f);
+
+            float ax_earth = r00 * raw_ax + r01 * raw_ay + r02 * raw_az;
+            float ay_earth = r10 * raw_ax + r11 * raw_ay + r12 * raw_az;
+            float az_earth = r20 * raw_ax + r21 * raw_ay + r22 * raw_az;
+
+            // Evaluate physical movement strictly in the Body Frame
+            float raw_acc_norm = sqrtf(raw_ax*raw_ax + raw_ay*raw_ay + raw_az*raw_az);
+            float raw_gyr_norm = sqrtf(raw_gx*raw_gx + raw_gy*raw_gy + raw_gz*raw_gz);
+
+            // Device is stationary if acceleration is ~1.0G and gyro is quiet
+            bool is_stationary = (raw_acc_norm > 0.5f) && (fabsf(raw_acc_norm - 1.0f) < 0.05f) && (raw_gyr_norm < 3.0f);
+
+            static float gx = 0, gy = 0, gz = 0;
+            static bool g_init = false;
+            static float warmup_timer = 0.0f;
+            
+            float a_kin_x = 0, a_kin_y = 0, a_kin_z = 0;
+
+            if (dt > 0) {
+                // 1. Boot-Time Grace Period (2.0 Seconds)
+                if (warmup_timer < 2.0f) {
+                    warmup_timer += dt;
+                    if (is_stationary) {
+                        gx = ax_earth; gy = ay_earth; gz = az_earth;
+                        g_init = true;
+                    }
+                    vel_ned[0] = 0; vel_ned[1] = 0; vel_ned[2] = 0;
+                    pos_ned[0] = 0; pos_ned[1] = 0; pos_ned[2] = 0;
+                } else {
+                    // 2. Standard Operation
+                    if (is_stationary && g_init) {
+                        // DEVICE RESTING: Deploy the Positional Washout and Hard ZUPT Hammer
+                        
+                        // Hard zero the velocity immediately (The Instant ZUPT Hammer)
+                        vel_ned[0] = 0.0f; 
+                        vel_ned[1] = 0.0f; 
+                        vel_ned[2] = 0.0f;
+
+                        // The Positional Washout (Rubber Band): 
+                        // Without GPS, IMUs can't know absolute position. This smoothly reels the 
+                        // phantom drift back to 0.0 cm so the HUD is pristine for the next move.
+                        float spring_force = dt * 2.0f; // Snaps back over ~0.5 seconds
+                        if (spring_force > 1.0f) spring_force = 1.0f;
+                        pos_ned[0] -= pos_ned[0] * spring_force;
+                        pos_ned[1] -= pos_ned[1] * spring_force;
+                        pos_ned[2] -= pos_ned[2] * spring_force;
+
+                        // Hard clamp exact zeros for clean UI when settled
+                        if (fabsf(pos_ned[0]) < 0.05f) pos_ned[0] = 0.0f;
+                        if (fabsf(pos_ned[1]) < 0.05f) pos_ned[1] = 0.0f;
+                        if (fabsf(pos_ned[2]) < 0.05f) pos_ned[2] = 0.0f;
+
+                        // Absorb residual Earth-frame gravity
+                        float alpha = dt / 0.5f; 
+                        if (alpha > 1.0f) alpha = 1.0f;
+                        gx += (ax_earth - gx) * alpha;
+                        gy += (ay_earth - gy) * alpha;
+                        gz += (az_earth - gz) * alpha;
+
+                    } else if (g_init) {
+                        // DEVICE MOVING: Shield baseline and integrate kinetics
+                        a_kin_x = (ax_earth - gx) * 9.80665f;
+                        a_kin_y = (ay_earth - gy) * 9.80665f;
+                        a_kin_z = (az_earth - gz) * 9.80665f;
+
+                        // 0.20 m/s^2 deadband to ignore microscopic noise while hand-held
+                        float kin_norm = sqrtf(a_kin_x*a_kin_x + a_kin_y*a_kin_y + a_kin_z*a_kin_z);
+                        if (kin_norm < 0.20f) {
+                            a_kin_x = 0; a_kin_y = 0; a_kin_z = 0;
+                        }
+
+                        // THE HIGH-PASS VELOCITY FILTER
+                        // We aggressively leak the velocity back toward zero even while moving. 
+                        // This mathematically limits the unbounded gravity-bleed accumulation 
+                        // when the device is pitched or rolled rapidly.
+                        float leak_rate = 1.0f - (1.5f * dt); 
+                        if (leak_rate < 0.0f) leak_rate = 0.0f;
+                        
+                        vel_ned[0] = (vel_ned[0] * leak_rate) + (a_kin_x * dt);
+                        vel_ned[1] = (vel_ned[1] * leak_rate) + (a_kin_y * dt);
+                        vel_ned[2] = (vel_ned[2] * leak_rate) + (a_kin_z * dt);
+
+                        // Integrate position natively
+                        pos_ned[0] += vel_ned[0] * dt;
+                        pos_ned[1] += vel_ned[1] * dt;
+                        pos_ned[2] += vel_ned[2] * dt;
+                    }
+                }
+            }
+
+            // --- TELEMETRY LOGGING ---
+            static uint32_t kin_debug = 0;
+            if (kin_debug++ % 20 == 0) {
+                if (warmup_timer < 2.0f) {
+                    ESP_LOGI(TAG, "WARMUP | stat: %d | raw_acc: %.3f G | Time: %.1f/2.0s", is_stationary, raw_acc_norm, warmup_timer);
+                } else {
+                    ESP_LOGI(TAG, "KINEMATICS | stat: %d | dt: %.4f | V: %5.1f %5.1f %5.1f | P: %5.1f %5.1f %5.1f", 
+                             is_stationary, dt, 
+                             vel_ned[0]*100.0f, vel_ned[1]*100.0f, vel_ned[2]*100.0f,
+                             pos_ned[0]*100.0f, pos_ned[1]*100.0f, pos_ned[2]*100.0f);
+                }
+            }
+
+            // Throttle LVGL graphics ping to ~50Hz to prevent Mutex Starvation
+            static uint8_t render_throttle = 0;
+            if (render_throttle++ % 4 == 0) { 
+                ui_render_update_3d(&current_q, !sensor_data.mag_valid, vel_ned, pos_ned);
+            }
         }
     }
 }

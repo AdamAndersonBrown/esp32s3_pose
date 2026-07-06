@@ -27,6 +27,8 @@ lv_display_t *display = NULL;
 lv_obj_t **objs;
 lv_point_precise_t *points;
 lv_obj_t *status_indicator;
+lv_obj_t *vel_label;
+lv_obj_t *pos_label;
 
 // ARCHITECT FIX: Calibration Overlay Objects
 lv_obj_t * calib_overlay;
@@ -120,6 +122,21 @@ void ui_render_init(void) {
         else lv_obj_add_style(objs[i], &style_red, 0);
     }
 
+    
+    vel_label = lv_label_create(lv_screen_active());
+    lv_obj_align(vel_label, LV_ALIGN_TOP_LEFT, 10, 10);
+    lv_obj_set_style_text_color(vel_label, lv_color_hex(0xFFFF00), 0); // Yellow
+    lv_obj_set_style_bg_color(vel_label, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(vel_label, LV_OPA_50, 0);                  // 50% transparent
+    lv_label_set_text(vel_label, "V(cm/s):     0     0     0");
+
+    pos_label = lv_label_create(lv_screen_active());
+    lv_obj_align(pos_label, LV_ALIGN_TOP_LEFT, 10, 40);                // Spaced down by 30 pixels
+    lv_obj_set_style_text_color(pos_label, lv_color_hex(0x00FFFF), 0); // Cyan
+    lv_obj_set_style_bg_color(pos_label, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(pos_label, LV_OPA_50, 0);                  // 50% transparent
+    lv_label_set_text(pos_label, "P(cm):     0     0     0");
+
     status_indicator = lv_obj_create(lv_screen_active());
     lv_obj_set_size(status_indicator, 15, 15);
     lv_obj_align(status_indicator, LV_ALIGN_TOP_RIGHT, -10, 10);
@@ -156,7 +173,7 @@ void ui_render_init(void) {
     bsp_display_unlock();
 }
 
-void ui_render_update_3d(quaternion_t *q, bool is_deadlocked) {
+void ui_render_update_3d(quaternion_t *q, bool is_deadlocked, float *vel, float *pos) {
     dspm::Mat T = dspm::Mat::eye(MATRIX_SIZE);
     dspm::Mat transformed_image(image.matrix_len, MATRIX_SIZE);
     dspm::Mat projected_image(image.matrix_len, MATRIX_SIZE);
@@ -205,5 +222,12 @@ void ui_render_update_3d(quaternion_t *q, bool is_deadlocked) {
     } else {
         lv_obj_set_style_bg_color(status_indicator, lv_palette_main(LV_PALETTE_GREEN), LV_PART_MAIN);
     }
+
+    // ARCHITECT FIX: Inject Kinematics into LVGL Labels (Integer Cast for OS Safety)
+    lv_label_set_text_fmt(vel_label, "V(cm/s): %5d %5d %5d", 
+                          (int)(vel[0] * 100.0f), (int)(vel[1] * 100.0f), (int)(vel[2] * 100.0f));
+    lv_label_set_text_fmt(pos_label, "P(cm): %5d %5d %5d", 
+                          (int)(pos[0] * 100.0f), (int)(pos[1] * 100.0f), (int)(pos[2] * 100.0f));
+
     bsp_display_unlock();
 }

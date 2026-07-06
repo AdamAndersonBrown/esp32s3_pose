@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 void ui_render_init(void);
-void ui_render_update_3d(quaternion_t *q, bool is_deadlocked);
+void ui_render_update_3d(quaternion_t *q, bool is_deadlocked, float *vel, float *pos);
 
 #ifdef __cplusplus
 }
