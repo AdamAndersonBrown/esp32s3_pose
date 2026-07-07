@@ -11,9 +11,8 @@
 // FRICTION: Velocity decay multiplier. Acts as "digital air resistance".
 #define KIN_FRICTION_COEF 0.8f  // LOWERED: Allows distance to accumulate more naturally
 
-// WASHOUT: How fast the positional "rubber band" pulls back to 0.0 cm when resting.
-// Lower = Lingers on screen longer. Higher = Snaps back instantly.
-#define KIN_WASHOUT_SPEED 0.2f  // EXTRACTED: ~5 second gentle fade instead of 0.5s snap
+// HOLD TIME: How many seconds to freeze the position on screen before resetting to 0.0 cm.
+#define KIN_HOLD_TIME_S 5.0f
 // ====================================================================
 
 static float gx = 0, gy = 0, gz = 0;
@@ -29,7 +28,8 @@ void kinematics_init(void) {
     for(int i=0; i<3; i++) { internal_vel[i] = 0; internal_pos[i] = 0; }
 }
 
-void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q, float* out_vel, float* out_pos) {
+void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q, float* out_vel, float* out_pos, bool* out_moving) {
+    static float stationary_timer = 0.0f;
     float q0 = q->q0, q1 = q->q1, q2 = q->q2, q3 = q->q3;
     float r00 = 1.0f - 2.0f * (q2*q2 + q3*q3);
     float r01 = 2.0f * (q1*q2 - q0*q3);
@@ -73,15 +73,13 @@ void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q,
             if (is_stationary && g_init) {
                 internal_vel[0] = 0.0f; internal_vel[1] = 0.0f; internal_vel[2] = 0.0f;
 
-                float spring_force = dt * KIN_WASHOUT_SPEED;
-                if (spring_force > 1.0f) spring_force = 1.0f;
-                internal_pos[0] -= internal_pos[0] * spring_force;
-                internal_pos[1] -= internal_pos[1] * spring_force;
-                internal_pos[2] -= internal_pos[2] * spring_force;
-
-                if (fabsf(internal_pos[0]) < 0.05f) internal_pos[0] = 0.0f;
-                if (fabsf(internal_pos[1]) < 0.05f) internal_pos[1] = 0.0f;
-                if (fabsf(internal_pos[2]) < 0.05f) internal_pos[2] = 0.0f;
+                stationary_timer += dt;
+                if (stationary_timer >= KIN_HOLD_TIME_S) {
+                    internal_pos[0] = 0.0f;
+                    internal_pos[1] = 0.0f;
+                    internal_pos[2] = 0.0f;
+                }
+                *out_moving = false;
 
                 float alpha = dt / 0.5f; 
                 if (alpha > 1.0f) alpha = 1.0f;
@@ -89,6 +87,9 @@ void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q,
                 gy += (ay_earth - gy) * alpha;
                 gz += (az_earth - gz) * alpha;
             } else if (g_init) {
+                stationary_timer = 0.0f;
+                *out_moving = true;
+                
                 a_kin_x = (ax_earth - gx) * GRAVITY_EARTH;
                 a_kin_y = (ay_earth - gy) * GRAVITY_EARTH;
                 a_kin_z = (az_earth - gz) * GRAVITY_EARTH;

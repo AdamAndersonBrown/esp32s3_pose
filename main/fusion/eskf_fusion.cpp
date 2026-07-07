@@ -150,8 +150,9 @@ static void eskf_physics_task(void *pvParameters) {
             // ====================================================================
             static float vel_ned[3] = {0.0f, 0.0f, 0.0f};
             static float pos_ned[3] = {0.0f, 0.0f, 0.0f};
+            bool is_moving = false;
             
-            kinematics_process(dt, &sensor_data, &current_q, vel_ned, pos_ned);
+            kinematics_process(dt, &sensor_data, &current_q, vel_ned, pos_ned, &is_moving);
             
             
 
@@ -175,6 +176,7 @@ static void eskf_physics_task(void *pvParameters) {
             taskENTER_CRITICAL(&state_spinlock);
             global_state.q = current_q;
             global_state.is_deadlocked = !sensor_data.mag_valid;
+            global_state.is_moving = is_moving;
             for(int i=0; i<3; i++) {
                 global_state.vel[i] = vel_ned[i];
                 global_state.pos[i] = pos_ned[i];

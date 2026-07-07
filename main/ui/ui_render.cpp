@@ -95,6 +95,9 @@ void ui_render_init(void) {
     display = bsp_display_start();
     init_perspective_matrix(perspective_matrix);
     
+    // ARCHITECT FIX: Set initial screen background to dark grey
+    lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(0x222222), 0);
+    
     image.matrix = jet_vectors_3d;
     image.matrix_len = JET_POINTS;
 
@@ -188,6 +191,17 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
     bool is_deadlocked = state.is_deadlocked;
     float *vel = state.vel;
     float *pos = state.pos;
+    bool is_moving = state.is_moving;
+
+    static bool was_moving = false;
+    if (is_moving != was_moving) {
+        if (is_moving) {
+            lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(0x660000), 0); // Dark Red
+        } else {
+            lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(0x222222), 0); // Dark Grey
+        }
+        was_moving = is_moving;
+    }
     dspm::Mat T = dspm::Mat::eye(MATRIX_SIZE);
     dspm::Mat transformed_image(image.matrix_len, MATRIX_SIZE);
     dspm::Mat projected_image(image.matrix_len, MATRIX_SIZE);

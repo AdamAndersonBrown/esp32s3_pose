@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 void kinematics_init(void);
-void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q, float* out_vel, float* out_pos);
+void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q, float* out_vel, float* out_pos, bool* out_moving);
 
 #ifdef __cplusplus
 }
