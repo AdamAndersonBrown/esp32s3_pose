@@ -92,6 +92,8 @@ static void calib_btn_event_cb(lv_event_t * e) {
 }
 
 void ui_render_init(void) {
+    vTaskDelay(pdMS_TO_TICKS(300)); // Let LVGL boot safely
+
     display = bsp_display_start();
     init_perspective_matrix(perspective_matrix);
     
@@ -101,7 +103,7 @@ void ui_render_init(void) {
     image.matrix = jet_vectors_3d;
     image.matrix_len = JET_POINTS;
 
-    bsp_display_lock(0);
+    while(!bsp_display_lock(1000)) { vTaskDelay(1); }
 
     // ARCHITECT FIX: Bind Bare-Metal Touch to LVGL
     lv_indev_t * indev = lv_indev_create();
@@ -176,11 +178,13 @@ void ui_render_init(void) {
     // Hide it by default
     lv_obj_add_flag(calib_overlay, LV_OBJ_FLAG_HIDDEN);
 
+    
+    // Ping physics state safely INSIDE the mutex
+    
+    lv_timer_create(ui_render_timer_cb, 50, NULL);
     bsp_display_unlock();
     
-    // Ping physics state at exactly 20Hz (50ms)
-    lv_timer_create(ui_render_timer_cb, 50, NULL);
-}
+    }
 
 // ARCHITECT FIX: Native LVGL Timer Callback (runs safely in UI thread)
 static void ui_render_timer_cb(lv_timer_t * timer) {
@@ -220,7 +224,7 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
     transformed_image = matrix_3d * T;
     projected_image = transformed_image * perspective_matrix;
 
-    bsp_display_lock(10000);
+    while(!bsp_display_lock(1000)) { vTaskDelay(1); }
     
     // ARCHITECT FIX: UI Overlay State Polling
     static bool was_calibrating = false;
@@ -259,5 +263,7 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
     lv_label_set_text_fmt(pos_label, "P(cm): %5d %5d %5d", 
                           (int)(pure_pos[0] * 100.0f), (int)(pure_pos[1] * 100.0f), (int)(pure_pos[2] * 100.0f));
 
+    
+    // Ping physics state safely INSIDE the mutex
     bsp_display_unlock();
 }

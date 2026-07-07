@@ -1,48 +1,38 @@
 import os
+import re
 
-def patch_file(filepath, old_text, new_text):
+def fix_fork_bomb_permanently():
+    filepath = "main/ui/ui_render.cpp"
     if not os.path.exists(filepath):
         print(f"ERROR: {filepath} not found.")
         return
+
     with open(filepath, 'r') as f:
         content = f.read()
-    
-    if old_text not in content:
-        print(f"WARNING: Target block not found in {filepath}. Skipping.")
-        return
+
+    # 1. Annihilate EVERY lv_timer_create in the file to clear the fork bomb
+    content = re.sub(r'\s*lv_timer_create\s*\(.*?\)\s*;', '', content)
+
+    # 2. Isolate ui_render_init and inject the timer safely inside its lock
+    # Split the file exactly at the initialization function signature
+    parts = content.split('void ui_render_init(void)', 1)
+    if len(parts) == 2:
+        before_init = parts[0]
+        after_init_decl = parts[1]
         
-    content = content.replace(old_text, new_text)
+        # Find the very first unlock *after* the initialization declaration
+        init_parts = after_init_decl.split('bsp_display_unlock();', 1)
+        if len(init_parts) == 2:
+            safe_timer_inject = "\n    lv_timer_create(ui_render_timer_cb, 50, NULL);\n    bsp_display_unlock();"
+            content = before_init + 'void ui_render_init(void)' + init_parts[0] + safe_timer_inject + init_parts[1]
+            print(f"Patched: {filepath} (Timer safely anchored exclusively inside ui_render_init)")
+        else:
+            print("Could not find unlock inside ui_render_init")
+    else:
+        print("Could not find ui_render_init")
+
     with open(filepath, 'w') as f:
         f.write(content)
-    print(f"Patched: {filepath}")
 
 if __name__ == "__main__":
-
-    # ---------------------------------------------------------
-    # 1. INJECT EMPIRICAL ZUPT MACROS
-    # ---------------------------------------------------------
-    macros_old = """// HOLD TIME: How many seconds to freeze the position on screen before resetting to 0.0 cm.
-#define KIN_HOLD_TIME_S 5.0f
-// ===================================================================="""
-
-    macros_new = """// HOLD TIME: How many seconds to freeze the position on screen before resetting to 0.0 cm.
-#define KIN_HOLD_TIME_S 5.0f
-
-// ZUPT THRESHOLDS: Derived from 12-hour empirical static capture.
-// Accel Max Dev: ~7 LSB (0.0034 G) | Gyro Max Dev: ~2 LSB (0.122 DPS)
-#define ZUPT_ACCEL_TOLERANCE_G 0.01f
-#define ZUPT_GYRO_TOLERANCE_DPS 0.5f
-// ===================================================================="""
-
-    patch_file("main/fusion/kinematics.cpp", macros_old, macros_new)
-
-    # ---------------------------------------------------------
-    # 2. APPLY THRESHOLDS TO THE STATIONARY GATE
-    # ---------------------------------------------------------
-    eval_old = """    bool is_stationary = (raw_acc_norm > 0.5f) && (fabsf(raw_acc_norm - 1.0f) < 0.05f) && (raw_gyr_norm < 3.0f);"""
-    
-    eval_new = """    bool is_stationary = (raw_acc_norm > 0.5f) && (fabsf(raw_acc_norm - 1.0f) < ZUPT_ACCEL_TOLERANCE_G) && (raw_gyr_norm < ZUPT_GYRO_TOLERANCE_DPS);"""
-
-    patch_file("main/fusion/kinematics.cpp", eval_old, eval_new)
-
-    print("\nEmpirical ZUPT boundaries successfully applied.")
+    fix_fork_bomb_permanently()

@@ -8,12 +8,13 @@
 static const char *TAG = "HAL_IMU";
 static bool imu_initialized = false;
 
-// ARCHITECT FIX: Native BSP Routing with Strict C++ Casting
+// ARCHITECT FIX: Restored Port 1 Isolation
 #ifndef BSP_I2C_NUM
 #define IMU_I2C_PORT I2C_NUM_0
 #else
 #define IMU_I2C_PORT (i2c_port_t)BSP_I2C_NUM
 #endif
+#define I2C_TIMEOUT_TICKS 100 // Prevent 10-second TWDT deadlocks
 
 uint8_t i2c_read_buffer[1024];
 uint8_t i2c_write_buffer[1024];
@@ -47,21 +48,21 @@ uint8_t i2c_write_buffer[1024];
 esp_err_t read_bmm150_data(uint8_t addr, uint8_t *data, int length) {
     i2c_write_buffer[0] = BMI270_AUX_READ_ADDR;
     i2c_write_buffer[1] = addr;
-    esp_err_t err = i2c_master_write_to_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 2, 1000);
+    esp_err_t err = i2c_master_write_to_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 2, I2C_TIMEOUT_TICKS);
     i2c_write_buffer[0] = BMI270_AUX_STATUS;
-    err = i2c_master_write_read_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 1, data, length, 1000);
+    err = i2c_master_write_read_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 1, data, length, I2C_TIMEOUT_TICKS);
     i2c_write_buffer[0] = BMI270_AUX_DATA0;
-    err = i2c_master_write_read_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 1, data, length, 1000);
+    err = i2c_master_write_read_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 1, data, length, I2C_TIMEOUT_TICKS);
     return err;
 }
 
 esp_err_t write_bmm150_data(uint8_t addr, uint8_t *data, int length) {
     i2c_write_buffer[0] = BMI270_AUX_WRITE_DATA;
     i2c_write_buffer[1] = data[0];
-    esp_err_t err = i2c_master_write_to_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 2, 1000);
+    esp_err_t err = i2c_master_write_to_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 2, I2C_TIMEOUT_TICKS);
     i2c_write_buffer[0] = BMI270_AUX_WRITE_ADDR;
     i2c_write_buffer[1] = addr;
-    err = i2c_master_write_to_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 2, 1000);
+    err = i2c_master_write_to_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 2, I2C_TIMEOUT_TICKS);
     vTaskDelay(pdMS_TO_TICKS(5));
     return err;
 }
@@ -70,36 +71,34 @@ esp_err_t write_bmi270_data(uint8_t addr, const uint8_t *data, int length) {
     if (length < 32) {
         i2c_write_buffer[0] = addr;
         for (size_t i = 0; i < length; i++) i2c_write_buffer[1 + i] = data[i];
-        return i2c_master_write_to_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 1 + length, 1000);
+        return i2c_master_write_to_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 1 + length, I2C_TIMEOUT_TICKS);
     }
     uint8_t *temp_data = (uint8_t *)malloc(length + 4);
     for (size_t i = 0; i < length; i++) temp_data[1 + i] = data[i];
     temp_data[0] = addr;
-    esp_err_t err = i2c_master_write_to_device(IMU_I2C_PORT, 0x69, temp_data, 1 + length, 1000);
+    esp_err_t err = i2c_master_write_to_device(IMU_I2C_PORT, 0x69, temp_data, 1 + length, I2C_TIMEOUT_TICKS);
     free(temp_data);
     return err;
 }
 
 esp_err_t read_bmi270_data(uint8_t addr, uint8_t *data, int length) {
     i2c_write_buffer[0] = addr;
-    return i2c_master_write_read_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 1, data, length, 1000);
+    return i2c_master_write_read_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 1, data, length, I2C_TIMEOUT_TICKS);
 }
 
 esp_err_t write_bmi270_reg(uint8_t addr, uint8_t data) {
     i2c_write_buffer[0] = addr;
     i2c_write_buffer[1] = data;
-    return i2c_master_write_to_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 2, 1000);
+    return i2c_master_write_to_device(IMU_I2C_PORT, 0x69, i2c_write_buffer, 2, I2C_TIMEOUT_TICKS);
 }
 
 esp_err_t imu_hal_init(void) {
     ESP_LOGI(TAG, "Initializing 9-DoF Hardware Abstraction Layer on BSP I2C Bus...");
 
-    // ARCHITECT FIX: NO MORE HIJACKING.
-    // We rely entirely on the M5Stack BSP to have initialized the I2C bus.
-    // The ESP-IDF legacy I2C driver will natively handle the mutex between our IMU and the FT3267 touch chip.
+    // Operating strictly on pre-initialized BSP I2C Bus
 
     uint8_t reset_cmd[2] = {0x7E, 0xB6};
-    i2c_master_write_to_device(IMU_I2C_PORT, 0x69, reset_cmd, 2, 1000);
+    i2c_master_write_to_device(IMU_I2C_PORT, 0x69, reset_cmd, 2, I2C_TIMEOUT_TICKS);
     vTaskDelay(pdMS_TO_TICKS(50));
     
     write_bmi270_reg(BMI270_IF_CONF, 0x20);

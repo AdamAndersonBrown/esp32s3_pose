@@ -1,9 +1,10 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
+#include "driver/i2c.h"
 #include "hal_imu.h"
 #include "eskf_fusion.h"
 #include "ui_render.h"
-#include "hal_pmic.h"
+#include "bsp/m5stack_core_s3.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -17,7 +18,19 @@ extern "C" void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
 
-    pmic_hal_init(); // Boot power rails before any peripherals initialize
+    bsp_i2c_init();
+    // Manually wake AXP2101 (PMIC) and AW9523B
+    uint8_t pmic_data[2];
+    pmic_data[0] = 0x90; pmic_data[1] = 0x8E; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x34, pmic_data, 2, 100);
+    pmic_data[0] = 0x92; pmic_data[1] = 0x1D; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x34, pmic_data, 2, 100);
+    pmic_data[0] = 0x93; pmic_data[1] = 0x1D; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x34, pmic_data, 2, 100);
+    pmic_data[0] = 0x99; pmic_data[1] = 0x1D; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x34, pmic_data, 2, 100);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    pmic_data[0] = 0x12; pmic_data[1] = 0x00; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
+    pmic_data[0] = 0x04; pmic_data[1] = 0x00; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
+    pmic_data[0] = 0x05; pmic_data[1] = 0x00; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
+    pmic_data[0] = 0x02; pmic_data[1] = 0xFF; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
+    pmic_data[0] = 0x03; pmic_data[1] = 0xFF; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
     ui_render_init();
     imu_hal_init();
     eskf_fusion_init();

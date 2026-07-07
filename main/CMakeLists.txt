@@ -2,7 +2,6 @@ idf_component_register(
     SRCS
                     "hal/hal_imu.cpp"
                     "hal/hal_touch.cpp"
-                    "hal/hal_pmic.c"
                     "fusion/eskf_fusion.cpp"
                     "fusion/calibration.cpp"
                     "fusion/kinematics.cpp"
