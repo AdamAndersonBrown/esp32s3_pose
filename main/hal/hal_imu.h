@@ -15,7 +15,6 @@ extern "C" {
 
 esp_err_t imu_hal_init(void);
 esp_err_t imu_hal_read_9dof(imu_9dof_data_t *data);
-bool imu_hal_read_touch(int16_t *x, int16_t *y);
 
 
 #ifdef __cplusplus

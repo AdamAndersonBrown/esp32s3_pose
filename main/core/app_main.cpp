@@ -3,6 +3,7 @@
 #include "hal_imu.h"
 #include "eskf_fusion.h"
 #include "ui_render.h"
+#include "hal_pmic.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -16,6 +17,7 @@ extern "C" void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
 
+    pmic_hal_init(); // Boot power rails before any peripherals initialize
     ui_render_init();
     imu_hal_init();
     eskf_fusion_init();

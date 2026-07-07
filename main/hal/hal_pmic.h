@@ -1,13 +1,10 @@
 #pragma once
-#include "eskf_fusion.h"
-#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void ui_render_init(void);
-
+void pmic_hal_init(void);
 
 #ifdef __cplusplus
 }

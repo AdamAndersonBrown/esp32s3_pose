@@ -7,9 +7,19 @@ typedef struct {
     float q0, q1, q2, q3;
 } quaternion_t;
 
+// ARCHITECT FIX: Thread-safe state container for UI polling
+typedef struct {
+    quaternion_t q;
+    float vel[3];
+    float pos[3];
+    bool is_deadlocked;
+} eskf_state_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+void eskf_get_latest_state(eskf_state_t *out_state);
 
 /**
  * @brief Initializes the ESKF Physics Engine and spawns the FPU thread.

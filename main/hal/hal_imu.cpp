@@ -1,7 +1,6 @@
 #include "hal_imu.h"
 #include "driver/i2c.h"
 #include "esp_log.h"
-#include "sensor_hal.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "bsp/m5stack_core_s3.h"
@@ -43,8 +42,7 @@ uint8_t i2c_write_buffer[1024];
 #define BMM150_REG_POWER_CONTROL   0x4B
 #define BMM150_DATA0               0x42
 
-extern "C" uint8_t bmi270_context_config_file[];
-extern "C" const int bmi270_context_config_file_size;
+#include "../core/bmi270_context.h"
 
 esp_err_t read_bmm150_data(uint8_t addr, uint8_t *data, int length) {
     i2c_write_buffer[0] = BMI270_AUX_READ_ADDR;
@@ -68,7 +66,7 @@ esp_err_t write_bmm150_data(uint8_t addr, uint8_t *data, int length) {
     return err;
 }
 
-esp_err_t write_bmi270_data(uint8_t addr, uint8_t *data, int length) {
+esp_err_t write_bmi270_data(uint8_t addr, const uint8_t *data, int length) {
     if (length < 32) {
         i2c_write_buffer[0] = addr;
         for (size_t i = 0; i < length; i++) i2c_write_buffer[1 + i] = data[i];
@@ -154,16 +152,23 @@ esp_err_t imu_hal_read_9dof(imu_9dof_data_t *data) {
     esp_err_t err = read_bmi270_data(BMI270_AUX_DATA0, (uint8_t *)sensors_data, 20);
     if (err != ESP_OK) return err;
 
-    BodyVectors body = stage1_hal_transform(sensors_data);
-    
-    data->acc_x = body.accel[0]; data->acc_y = body.accel[1]; data->acc_z = body.accel[2];
-    data->gyr_x = body.gyro[0]; data->gyr_y = body.gyro[1]; data->gyr_z = body.gyro[2];
-    data->mag_x = body.mag[0]; data->mag_y = body.mag[1]; data->mag_z = body.mag[2];
+    data->acc_x = (float)sensors_data[4];
+    data->acc_y = (float)sensors_data[5];
+    data->acc_z = (float)sensors_data[6];
+
+    data->gyr_x = (float)sensors_data[7];
+    data->gyr_y = (float)sensors_data[8];
+    data->gyr_z = (float)sensors_data[9];
+
+    // Decode magnetometer LSBs and map directly to Body ENU Frame natively
+    data->mag_x = (float)(sensors_data[0]) / 8.0f;
+    data->mag_y = -((float)(sensors_data[1]) / 8.0f);
+    data->mag_z = -((float)(sensors_data[2]) / 2.0f);
 
     static float prev_mag[3] = {0, 0, 0};
     static uint8_t deadlock_counter = 0;
     
-    if (body.mag[0] == prev_mag[0] && body.mag[1] == prev_mag[1] && body.mag[2] == prev_mag[2]) {
+    if (data->mag_x == prev_mag[0] && data->mag_y == prev_mag[1] && data->mag_z == prev_mag[2]) {
         if (deadlock_counter < 255) deadlock_counter++;
         if (deadlock_counter > 50) data->mag_valid = false;
     } else {
@@ -171,45 +176,10 @@ esp_err_t imu_hal_read_9dof(imu_9dof_data_t *data) {
         data->mag_valid = true;
     }
     
-    prev_mag[0] = body.mag[0]; prev_mag[1] = body.mag[1]; prev_mag[2] = body.mag[2];
+    prev_mag[0] = data->mag_x; prev_mag[1] = data->mag_y; prev_mag[2] = data->mag_z;
     return ESP_OK;
 }
 
 
 
-// ARCHITECT FIX: Bare-Metal Touch Polling & AW9523B Reset
-bool imu_hal_read_touch(int16_t *x, int16_t *y) {
-    static bool touch_hw_awake = false;
-    if (!touch_hw_awake) {
-        // AW9523B Expander (0x58). Pin P0_0 controls the FT6336U Touch Reset.
-        uint8_t conf = 0;
-        uint8_t reg_conf = 0x04; // P0 Configuration Register
-        if (i2c_master_write_read_device(IMU_I2C_PORT, 0x58, &reg_conf, 1, &conf, 1, 1000) == ESP_OK) {
-            conf &= ~0x01; // Set P0_0 to Output
-            uint8_t write_conf[2] = {0x04, conf};
-            i2c_master_write_to_device(IMU_I2C_PORT, 0x58, write_conf, 2, 1000);
-        }
-        
-        uint8_t out = 0;
-        uint8_t reg_out = 0x02; // P0 Output Data Register
-        if (i2c_master_write_read_device(IMU_I2C_PORT, 0x58, &reg_out, 1, &out, 1, 1000) == ESP_OK) {
-            out |= 0x01; // Pull P0_0 HIGH to release FT6336U from Reset
-            uint8_t write_out[2] = {0x02, out};
-            i2c_master_write_to_device(IMU_I2C_PORT, 0x58, write_out, 2, 1000);
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(50)); // Give the Touch IC 50ms to boot
-        touch_hw_awake = true;
-    }
 
-    uint8_t data[5];
-    uint8_t reg = 0x02; // FT6336U TD_STATUS Register
-    esp_err_t err = i2c_master_write_read_device(IMU_I2C_PORT, 0x38, &reg, 1, data, 5, 1000);
-    
-    if (err == ESP_OK && (data[0] & 0x0F) > 0) { // If point count > 0
-        *x = ((data[1] & 0x0F) << 8) | data[2];
-        *y = ((data[3] & 0x0F) << 8) | data[4];
-        return true;
-    }
-    return false;
-}

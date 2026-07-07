@@ -1,49 +1,41 @@
 import os
-import sys
+import re
 
-file_path = os.path.join("main", "fusion", "eskf_fusion.cpp")
+def fix_fork_bomb(filepath):
+    if not os.path.exists(filepath):
+        print(f"ERROR: {filepath} not found.")
+        return
+        
+    with open(filepath, 'r') as f:
+        content = f.read()
 
-if not os.path.exists(file_path):
-    print(f"Error: '{file_path}' not found. Please run this script from the project root.")
-    sys.exit(1)
+    # The regex in Phase 5 injected the timer creation twice. 
+    # We want to remove the one at the very end of the file (inside the callback).
+    # We will use rsplit to find the LAST occurrence and revert it.
+    
+    bad_block = """    bsp_display_unlock();
+    
+    // Ping physics state at exactly 20Hz (50ms)
+    lv_timer_create(ui_render_timer_cb, 50, NULL);
+}"""
 
-with open(file_path, "r") as f:
-    content = f.read()
+    good_block = """    bsp_display_unlock();
+}"""
 
-target_block = """                // 1. Accelerometer Inflation (Centripetal & Kinetic Noise Rejection)
-                // Earth gravity is exactly 1.0G. Any deviation indicates kinetic movement.
-                float current_acc_norm = accel_input_mat.norm();
-                float acc_distortion = fabsf(current_acc_norm - 1.0f);
-                if (acc_distortion > 0.05f) {
-                    // Exponentially detach the virtual horizon during cornering/acceleration
-                    acc_var += (acc_distortion * 20.0f); 
-                }
+    # Split from the right, replacing only the final occurrence
+    parts = content.rsplit(bad_block, 1)
+    
+    if len(parts) == 2:
+        content = parts[0] + good_block + parts[1]
+        with open(filepath, 'w') as f:
+            f.write(content)
+        print(f"Patched: {filepath} (Timer fork bomb neutralized)")
+    else:
+        # Fallback for slight whitespace variations
+        content = re.sub(r'bsp_display_unlock\(\);\s*// Ping physics state at exactly 20Hz \(50ms\)\s*lv_timer_create\(ui_render_timer_cb, 50, NULL\);\s*\}\s*$', '    bsp_display_unlock();\n}\n', content)
+        with open(filepath, 'w') as f:
+            f.write(content)
+        print(f"Patched: {filepath} (Timer fork bomb neutralized via regex)")
 
-                // 2. Magnetometer Inflation (EMI & Hard-Iron Rejection)
-                if (spherical_distortion > 0.05f) {
-                    mag_var += (spherical_distortion * 15.0f); 
-                }"""
-
-replacement_block = """                // 1. Accelerometer Inflation (Centripetal & Kinetic Noise Rejection)
-                // Earth gravity is exactly 1.0G. Any deviation indicates kinetic movement.
-                float current_acc_norm = accel_input_mat.norm();
-                float acc_distortion = fabsf(current_acc_norm - 1.0f);
-                if (acc_distortion > 0.05f) {
-                    // ARCHITECT FIX: Squared exponential penalty (n=2) for off-road impacts
-                    acc_var += (acc_distortion * acc_distortion * 20.0f); 
-                }
-
-                // 2. Magnetometer Inflation (EMI & Hard-Iron Rejection)
-                if (spherical_distortion > 0.05f) {
-                    // ARCHITECT FIX: Squared exponential penalty (n=2) to reject severe powertrain EMI
-                    mag_var += (spherical_distortion * spherical_distortion * 15.0f); 
-                }"""
-
-if target_block in content:
-    new_content = content.replace(target_block, replacement_block)
-    with open(file_path, "w") as f:
-        f.write(new_content)
-    print(f"SUCCESS: Architectural patch applied to {file_path}. Adaptive ESKF upgraded to squared exponential penalties.")
-else:
-    print(f"FAILURE: Target string not found in {file_path}. Aborting to prevent regression.")
-    sys.exit(1)
+if __name__ == "__main__":
+    fix_fork_bomb("main/ui/ui_render.cpp")

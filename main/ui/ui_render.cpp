@@ -1,10 +1,10 @@
 #include "ui_render.h"
 #include "hal_imu.h"
+#include "hal_touch.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include "cube_matrix.h"
-#include "image_to_3d_matrix.h"
-#include "sensor_ned.h"
+
 #include "eskf_fusion.h"
 #include <stdio.h>
 
@@ -22,27 +22,30 @@ const float jet_vectors_3d[JET_POINTS][MATRIX_SIZE] = {
 const uint8_t jet_line_begin[JET_EDGES] = {0, 0, 1, 2, 3, 1, 2, 0, 1, 2, 3};
 const uint8_t jet_line_end[JET_EDGES]   = {1, 2, 3, 3, 4, 4, 4, 5, 5, 5, 5};
 
-lv_style_t style_red; lv_style_t style_blue; lv_style_t style_green; 
-lv_display_t *display = NULL;
-lv_obj_t **objs;
-lv_point_precise_t *points;
-lv_obj_t *status_indicator;
-lv_obj_t *vel_label;
-lv_obj_t *pos_label;
+static lv_style_t style_red; static lv_style_t style_blue; static lv_style_t style_green; 
+static lv_display_t *display = NULL;
+static lv_obj_t **objs;
+static lv_point_precise_t *points;
+static lv_obj_t *status_indicator;
+static lv_obj_t *vel_label;
+static lv_obj_t *pos_label;
 
 // ARCHITECT FIX: Calibration Overlay Objects
-lv_obj_t * calib_overlay;
-lv_obj_t * calib_overlay_label;
+static lv_obj_t * calib_overlay;
+static lv_obj_t * calib_overlay_label;
 
-image_3d_matrix_t image;
-dspm::Mat perspective_matrix(MATRIX_SIZE, MATRIX_SIZE);
+static image_3d_matrix_t image;
+static dspm::Mat perspective_matrix(MATRIX_SIZE, MATRIX_SIZE);
+
+// ARCHITECT FIX: Forward declare timer callback for C++ top-to-bottom compilation
+static void ui_render_timer_cb(lv_timer_t * timer);
 
 // ==========================================
 // RESTORED: Bare-Metal Hardware Feed to LVGL
 // ==========================================
 static void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data) {
     int16_t x, y;
-    if (imu_hal_read_touch(&x, &y)) {
+    if (touch_hal_read(&x, &y)) {
         data->point.x = x;
         data->point.y = y;
         data->state = LV_INDEV_STATE_PRESSED;
@@ -171,9 +174,20 @@ void ui_render_init(void) {
     lv_obj_add_flag(calib_overlay, LV_OBJ_FLAG_HIDDEN);
 
     bsp_display_unlock();
+    
+    // Ping physics state at exactly 20Hz (50ms)
+    lv_timer_create(ui_render_timer_cb, 50, NULL);
 }
 
-void ui_render_update_3d(quaternion_t *q, bool is_deadlocked, float *vel, float *pos) {
+// ARCHITECT FIX: Native LVGL Timer Callback (runs safely in UI thread)
+static void ui_render_timer_cb(lv_timer_t * timer) {
+    eskf_state_t state;
+    eskf_get_latest_state(&state);
+    
+    quaternion_t *q = &state.q;
+    bool is_deadlocked = state.is_deadlocked;
+    float *vel = state.vel;
+    float *pos = state.pos;
     dspm::Mat T = dspm::Mat::eye(MATRIX_SIZE);
     dspm::Mat transformed_image(image.matrix_len, MATRIX_SIZE);
     dspm::Mat projected_image(image.matrix_len, MATRIX_SIZE);

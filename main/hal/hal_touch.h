@@ -1,13 +1,12 @@
 #pragma once
-#include "eskf_fusion.h"
+#include <stdint.h>
 #include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void ui_render_init(void);
-
+bool touch_hal_read(int16_t *x, int16_t *y);
 
 #ifdef __cplusplus
 }
