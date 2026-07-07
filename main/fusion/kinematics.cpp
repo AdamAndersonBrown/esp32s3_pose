@@ -2,6 +2,20 @@
 #include "physics_constants.h"
 #include <math.h>
 
+// ====================================================================
+// KINEMATICS TUNING PARAMETERS
+// ====================================================================
+// DEADBAND: Minimum acceleration (m/s^2) required to trigger integration.
+#define KIN_DEADBAND_MS2 0.05f  // LOWERED: Allows slow, gentle slides to register
+
+// FRICTION: Velocity decay multiplier. Acts as "digital air resistance".
+#define KIN_FRICTION_COEF 0.8f  // LOWERED: Allows distance to accumulate more naturally
+
+// WASHOUT: How fast the positional "rubber band" pulls back to 0.0 cm when resting.
+// Lower = Lingers on screen longer. Higher = Snaps back instantly.
+#define KIN_WASHOUT_SPEED 0.2f  // EXTRACTED: ~5 second gentle fade instead of 0.5s snap
+// ====================================================================
+
 static float gx = 0, gy = 0, gz = 0;
 static bool g_init = false;
 static float warmup_timer = 0.0f;
@@ -59,7 +73,7 @@ void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q,
             if (is_stationary && g_init) {
                 internal_vel[0] = 0.0f; internal_vel[1] = 0.0f; internal_vel[2] = 0.0f;
 
-                float spring_force = dt * 2.0f;
+                float spring_force = dt * KIN_WASHOUT_SPEED;
                 if (spring_force > 1.0f) spring_force = 1.0f;
                 internal_pos[0] -= internal_pos[0] * spring_force;
                 internal_pos[1] -= internal_pos[1] * spring_force;
@@ -80,11 +94,11 @@ void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q,
                 a_kin_z = (az_earth - gz) * GRAVITY_EARTH;
 
                 float kin_norm = sqrtf(a_kin_x*a_kin_x + a_kin_y*a_kin_y + a_kin_z*a_kin_z);
-                if (kin_norm < 0.20f) {
+                if (kin_norm < KIN_DEADBAND_MS2) {
                     a_kin_x = 0; a_kin_y = 0; a_kin_z = 0;
                 }
 
-                float leak_rate = 1.0f - (1.5f * dt); 
+                float leak_rate = 1.0f - (KIN_FRICTION_COEF * dt); 
                 if (leak_rate < 0.0f) leak_rate = 0.0f;
                 
                 internal_vel[0] = (internal_vel[0] * leak_rate) + (a_kin_x * dt);
