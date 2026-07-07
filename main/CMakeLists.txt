@@ -6,6 +6,7 @@ idf_component_register(
                     "fusion/eskf_fusion.cpp"
                     "fusion/calibration.cpp"
                     "fusion/kinematics.cpp"
+                    "fusion/odometry.cpp"
                     "fusion/nvs_calibration.cpp"
                     "ui/ui_render.cpp" 
         "core/app_main.cpp"

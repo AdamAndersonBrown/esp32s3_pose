@@ -2,6 +2,7 @@
 #include "physics_constants.h"
 #include "calibration.h"
 #include "kinematics.h"
+#include "odometry.h"
 #include "ui_render.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -150,9 +151,13 @@ static void eskf_physics_task(void *pvParameters) {
             // ====================================================================
             static float vel_ned[3] = {0.0f, 0.0f, 0.0f};
             static float pos_ned[3] = {0.0f, 0.0f, 0.0f};
+            static float a_kin[3] = {0.0f, 0.0f, 0.0f};
+            static float pure_pos[3] = {0.0f, 0.0f, 0.0f};
             bool is_moving = false;
+            bool clear_hold = false;
             
-            kinematics_process(dt, &sensor_data, &current_q, vel_ned, pos_ned, &is_moving);
+            kinematics_process(dt, &sensor_data, &current_q, vel_ned, pos_ned, &is_moving, a_kin, &clear_hold);
+            odometry_process(dt, a_kin, is_moving, clear_hold, pure_pos);
             
             
 
@@ -180,6 +185,7 @@ static void eskf_physics_task(void *pvParameters) {
             for(int i=0; i<3; i++) {
                 global_state.vel[i] = vel_ned[i];
                 global_state.pos[i] = pos_ned[i];
+                global_state.pure_pos[i] = pure_pos[i];
             }
             taskEXIT_CRITICAL(&state_spinlock);
         }
@@ -193,6 +199,7 @@ void eskf_fusion_init(void) {
 
     calibration_init();
     kinematics_init();
+    odometry_init();
 
     imu_queue = xQueueCreate(10, sizeof(imu_9dof_data_t));
     if (imu_queue != NULL) {

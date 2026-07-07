@@ -13,6 +13,11 @@
 
 // HOLD TIME: How many seconds to freeze the position on screen before resetting to 0.0 cm.
 #define KIN_HOLD_TIME_S 5.0f
+
+// ZUPT THRESHOLDS: Derived from 12-hour empirical static capture.
+// Accel Max Dev: ~7 LSB (0.0034 G) | Gyro Max Dev: ~2 LSB (0.122 DPS)
+#define ZUPT_ACCEL_TOLERANCE_G 0.01f
+#define ZUPT_GYRO_TOLERANCE_DPS 0.5f
 // ====================================================================
 
 static float gx = 0, gy = 0, gz = 0;
@@ -28,8 +33,10 @@ void kinematics_init(void) {
     for(int i=0; i<3; i++) { internal_vel[i] = 0; internal_pos[i] = 0; }
 }
 
-void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q, float* out_vel, float* out_pos, bool* out_moving) {
+void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q, float* out_vel, float* out_pos, bool* out_moving, float* out_a_kin, bool* out_clear_hold) {
     static float stationary_timer = 0.0f;
+    *out_clear_hold = false;
+    out_a_kin[0] = 0.0f; out_a_kin[1] = 0.0f; out_a_kin[2] = 0.0f;
     float q0 = q->q0, q1 = q->q1, q2 = q->q2, q3 = q->q3;
     float r00 = 1.0f - 2.0f * (q2*q2 + q3*q3);
     float r01 = 2.0f * (q1*q2 - q0*q3);
@@ -56,7 +63,7 @@ void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q,
     float raw_acc_norm = sqrtf(raw_ax*raw_ax + raw_ay*raw_ay + raw_az*raw_az);
     float raw_gyr_norm = sqrtf(raw_gx*raw_gx + raw_gy*raw_gy + raw_gz*raw_gz);
 
-    bool is_stationary = (raw_acc_norm > 0.5f) && (fabsf(raw_acc_norm - 1.0f) < 0.05f) && (raw_gyr_norm < 3.0f);
+    bool is_stationary = (raw_acc_norm > 0.5f) && (fabsf(raw_acc_norm - 1.0f) < ZUPT_ACCEL_TOLERANCE_G) && (raw_gyr_norm < ZUPT_GYRO_TOLERANCE_DPS);
 
     float a_kin_x = 0, a_kin_y = 0, a_kin_z = 0;
 
@@ -78,6 +85,7 @@ void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q,
                     internal_pos[0] = 0.0f;
                     internal_pos[1] = 0.0f;
                     internal_pos[2] = 0.0f;
+                    *out_clear_hold = true;
                 }
                 *out_moving = false;
 
@@ -109,6 +117,10 @@ void kinematics_process(float dt, imu_9dof_data_t* sensor_data, quaternion_t* q,
                 internal_pos[0] += internal_vel[0] * dt;
                 internal_pos[1] += internal_vel[1] * dt;
                 internal_pos[2] += internal_vel[2] * dt;
+                
+                out_a_kin[0] = a_kin_x;
+                out_a_kin[1] = a_kin_y;
+                out_a_kin[2] = a_kin_z;
             }
         }
     }

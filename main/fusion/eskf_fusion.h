@@ -12,6 +12,7 @@ typedef struct {
     quaternion_t q;
     float vel[3];
     float pos[3];
+    float pure_pos[3];
     bool is_deadlocked;
     bool is_moving;
 } eskf_state_t;

@@ -191,6 +191,7 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
     bool is_deadlocked = state.is_deadlocked;
     float *vel = state.vel;
     float *pos = state.pos;
+    float *pure_pos = state.pure_pos;
     bool is_moving = state.is_moving;
 
     static bool was_moving = false;
@@ -254,8 +255,9 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
     // ARCHITECT FIX: Inject Kinematics into LVGL Labels (Integer Cast for OS Safety)
     lv_label_set_text_fmt(vel_label, "V(cm/s): %5d %5d %5d", 
                           (int)(vel[0] * 100.0f), (int)(vel[1] * 100.0f), (int)(vel[2] * 100.0f));
+    // ARCHITECT FIX: Bind UI distance label to the frictionless Odometry engine
     lv_label_set_text_fmt(pos_label, "P(cm): %5d %5d %5d", 
-                          (int)(pos[0] * 100.0f), (int)(pos[1] * 100.0f), (int)(pos[2] * 100.0f));
+                          (int)(pure_pos[0] * 100.0f), (int)(pure_pos[1] * 100.0f), (int)(pure_pos[2] * 100.0f));
 
     bsp_display_unlock();
 }
