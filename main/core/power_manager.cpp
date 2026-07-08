@@ -1,4 +1,5 @@
 #include "esp_log.h"
+#include "driver/temperature_sensor.h"
 #include "power_manager.h"
 #include "pmic_constants.h"
 #include "freertos/FreeRTOS.h"
@@ -22,28 +23,37 @@ static void set_backlight_voltage(uint8_t voltage_hex) {
 }
 
 
-// Architect Helper: Kill unused CoreS3 Silicon (Camera & Audio Amp)
+// Architect Helper: Restore CoreS3 Silicon (AW9523B & IMU Routing)
 static void sever_extraneous_hardware() {
-    uint8_t aldo_reg = 0x92; // AXP2101 ALDO1-4 ON/OFF Register
+    uint8_t aldo_reg = PMIC_REG_LDO_ONOFF; 
     uint8_t aldo_val = 0;
     
-    // Read current LDO states
     if (i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &aldo_reg, 1, &aldo_val, 1, 100) == ESP_OK) {
-        // CoreS3 Map: ALDO1 (Cam 1.8V), ALDO2 (Cam 2.8V), ALDO3 (Audio 3.3V)
-        // We mask off bits 0, 1, and 2 to physically sever power to these chips.
-        uint8_t optimized_val = aldo_val & ~0x07; 
+        // ARCHITECT FIX: Force ALDO 1, 2, 3, and 4 back ON.
+        // The PMIC retains states across warm reboots. We must explicitly re-enable 
+        // the rails that power the AW9523B GPIO expander to unbrick the IMU interrupt.
+        uint8_t optimized_val = aldo_val | 0x0F; 
         
         if (aldo_val != optimized_val) {
             uint8_t pmic_data[2] = {aldo_reg, optimized_val};
             i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, pmic_data, 2, 100);
-            ESP_LOGI(TAG, "Hardware Severed: Camera and Audio Amplifier power rails disabled.");
+            ESP_LOGI(TAG, "Hardware Restored: ALDO rails re-energized to unbrick IMU.");
         }
     }
 }
 
-
 // Architect Helper: Maximize USB-C Input and Battery Charging
 static void open_charging_floodgates() {
+    
+    // Prevent Dynamic Power Management (DPM) from choking current when the cable sags
+    uint8_t reg_vhold = PMIC_REG_VBUS_VOLTAGE;
+    uint8_t val_vhold = 0;
+    if (i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &reg_vhold, 1, &val_vhold, 1, 100) == ESP_OK) {
+        val_vhold = (val_vhold & 0xF0) | 0x02; // Set VHOLD threshold to 4.0V
+        uint8_t write_data[2] = {reg_vhold, val_vhold};
+        i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, write_data, 2, 100);
+    }
+
     uint8_t reg_vbus = PMIC_REG_VBUS_LIMIT;
     uint8_t val_vbus = 0;
     
@@ -63,10 +73,27 @@ static void open_charging_floodgates() {
         i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, write_data, 2, 100);
     }
     
-    ESP_LOGI(TAG, "Hardware Overridden: VBUS Limit expanded to 1.5A. Charging forcefully enabled.");
+    
+    // Force Constant Charge Current to Hardware Maximum (1000mA)
+    uint8_t reg_cc = PMIC_REG_CHG_CURRENT;
+    uint8_t val_cc = 0;
+    if (i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &reg_cc, 1, &val_cc, 1, 100) == ESP_OK) {
+        // We set the bitmask to maximum to guarantee up to 1000mA of charge current
+        val_cc = 0x1B; // 0x1B is the documented hex value for 1000mA on the AXP2101
+        uint8_t write_data[2] = {reg_cc, val_cc};
+        i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, write_data, 2, 100);
+    }
+
+    ESP_LOGI(TAG, "Hardware Overridden: VBUS Limit to 1.5A. Charge Current MAXED (1A).");
 }
 
 void power_manager_task(void *pvParameters) {
+    // ARCHITECT FIX: Initialize ESP32-S3 Internal Temperature Sensor
+    temperature_sensor_handle_t temp_handle = NULL;
+    temperature_sensor_config_t temp_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(20, 100);
+    temperature_sensor_install(&temp_config, &temp_handle);
+    temperature_sensor_enable(temp_handle);
+
     ESP_LOGI(TAG, "Power Manager Daemon Booted on Core 0.");
     sever_extraneous_hardware();
     open_charging_floodgates();
@@ -96,33 +123,43 @@ void power_manager_task(void *pvParameters) {
             }
         }
 
-        // --- E-GAUGE POLLING (1Hz) ---
+        // --- E-GAUGE & CHARGE STATUS POLLING (1Hz) ---
         if (tick_count % 10 == 0) {
-            uint8_t reg_pct = PMIC_REG_BAT_PERCENT; 
-            uint8_t pct_val = 0;
-            esp_err_t err = i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &reg_pct, 1, &pct_val, 1, 100);
+            uint8_t regs[2] = {PMIC_REG_BAT_PERCENT, PMIC_REG_PMU_STATUS}; // ARCHITECT FIX: Target VBUS Status (0x00)
+            uint8_t vals[2] = {0, 0};
             
-            if (err == ESP_OK) {
-                if (pct_val <= 100) global_state.pmic_percentage = (int)pct_val;
-            } else {
-                ESP_LOGE(TAG, "Failed to read E-Gauge (0x%X).", err);
+            esp_err_t err1 = i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &regs[0], 1, &vals[0], 1, 100);
+            esp_err_t err2 = i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &regs[1], 1, &vals[1], 1, 100);
+            
+            if (err1 == ESP_OK && vals[0] <= 100) {
+                global_state.pmic_percentage = (int)vals[0];
+            }
+            
+            if (temp_handle != NULL) {
+                float tsens_value;
+                temperature_sensor_get_celsius(temp_handle, &tsens_value);
+                global_state.system_temp = tsens_value;
+            }
+            if (err2 == ESP_OK) {
+                // If Chg Stat is > 0x00, the hardware is actively routing current
+                global_state.is_charging = ((vals[1] & 0x10) != 0); // ARCHITECT FIX: Mask Bit 4 (0x10) to detect active USB power
             }
         }
 
         
         // --- HARDWARE AUDIT & ENFORCEMENT (Every 5 Seconds) ---
         if (tick_count % 50 == 0) {
-            uint8_t regs[4] = {PMIC_REG_PMU_STATUS, PMIC_REG_CHG_STATUS, PMIC_REG_VBUS_LIMIT, PMIC_REG_CHG_CTRL};
-            uint8_t vals[4] = {0, 0, 0, 0};
+            uint8_t regs[5] = {PMIC_REG_PMU_STATUS, PMIC_REG_CHG_STATUS, PMIC_REG_VBUS_LIMIT, PMIC_REG_CHG_CTRL, PMIC_REG_CHG_CURRENT};
+            uint8_t vals[5] = {0, 0, 0, 0, 0};
             
-            for(int i=0; i<4; i++) {
+            for(int i=0; i<5; i++) {
                 i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &regs[i], 1, &vals[i], 1, 100);
             }
 
-            ESP_LOGI(TAG, "PMIC AUDIT | VBUS Limit Reg: 0x%02X | Chg Ctrl Reg: 0x%02X | PMU Stat: 0x%02X | Chg Stat: 0x%02X", vals[2], vals[3], vals[0], vals[1]);
+            ESP_LOGI(TAG, "PMIC AUDIT | Bat: %d%% | VBUS: 0x%02X | ChgCtrl: 0x%02X | ChgCur: 0x%02X | PMU Stat: 0x%02X | Chg Stat: 0x%02X", global_state.pmic_percentage, vals[2], vals[3], vals[4], vals[0], vals[1]);
 
-            // VBUS Limit Check: Ensure the bottom 3 bits are still 0x04 (1.5A)
-            if ((vals[2] & 0x07) != 0x04) {
+            // VBUS Limit Check (1.5A) OR Charge Current Check (1.0A = 0x1B)
+            if (((vals[2] & 0x07) != 0x04) || (vals[4] != 0x1B)) {
                 ESP_LOGW(TAG, "Hardware override dropped! Re-opening charging floodgates...");
                 open_charging_floodgates();
             }

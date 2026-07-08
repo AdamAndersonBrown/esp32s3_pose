@@ -33,6 +33,7 @@ static lv_obj_t *status_indicator;
 static lv_obj_t *vel_label;
 static lv_obj_t *pos_label;
 static lv_obj_t * pmic_label;
+static lv_obj_t * temp_label;
 
 // ARCHITECT FIX: Calibration Overlay Objects
 static lv_obj_t * calib_overlay;
@@ -190,6 +191,13 @@ void ui_render_init(void) {
     
     // CRITICAL: Start the 20Hz rendering loop!
     pmic_label = lv_label_create(lv_scr_act());
+    
+    // ARCHITECT FIX: Create Thermal Telemetry Label
+    temp_label = lv_label_create(lv_scr_act());
+    lv_label_set_text(temp_label, "SYS: --.- C");
+    lv_obj_align(temp_label, LV_ALIGN_BOTTOM_LEFT, 10, -10);
+    lv_obj_set_style_text_color(temp_label, lv_color_hex(0xFF8800), 0); // Orange warning color
+
     lv_label_set_text(pmic_label, "PWR: -- mA");
     lv_obj_align(pmic_label, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
     lv_obj_set_style_text_color(pmic_label, lv_color_hex(0xFFFFFF), 0);
@@ -207,11 +215,24 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
     eskf_get_latest_state(&state);
     
     quaternion_t *q = &state.q;
-    lv_label_set_text_fmt(pmic_label, "BAT: %d%%", state.pmic_percentage);
+    if (global_state.is_charging) { // ARCHITECT FIX: Bypass broken struct copy and read global directly
+        lv_label_set_text_fmt(pmic_label, "BAT: %d%% %s", state.pmic_percentage, LV_SYMBOL_CHARGE);
+        lv_obj_set_style_text_color(pmic_label, lv_color_hex(0x00FF00), 0); // Green when charging
+    } else {
+        lv_label_set_text_fmt(pmic_label, "BAT: %d%%", state.pmic_percentage);
+        lv_obj_set_style_text_color(pmic_label, lv_color_hex(0xFFFFFF), 0); // White when on battery
+    }
     bool is_deadlocked = state.is_deadlocked;
     float *vel = state.vel;
     float *pos = state.pos;
     (void)pos; // Suppress unused variable warning
+    if(temp_label != NULL) {
+        // ARCHITECT FIX: Bypass newlib-nano float formatting trap
+        int temp_whole = (int)global_state.system_temp;
+        int temp_frac = (int)((global_state.system_temp - temp_whole) * 10.0f);
+        if (temp_frac < 0) temp_frac = -temp_frac; 
+        lv_label_set_text_fmt(temp_label, "SYS: %d.%d C", temp_whole, temp_frac);
+    }
     float *pure_pos = state.pure_pos;
     bool is_moving = state.is_moving;
 
