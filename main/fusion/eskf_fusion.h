@@ -13,10 +13,10 @@ typedef struct {
     float vel[3];
     float pos[3];
     float pure_pos[3];
-    bool is_deadlocked;
-    bool is_moving;
-    int pmic_percentage;
-    bool is_sleeping;
+    volatile bool is_deadlocked;
+    volatile bool is_moving;
+    volatile int pmic_percentage;
+    volatile bool is_sleeping;
 } eskf_state_t;
 
 extern eskf_state_t global_state;
