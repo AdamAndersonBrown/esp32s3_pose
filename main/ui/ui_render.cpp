@@ -222,6 +222,7 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
         } else {
             lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(0x222222), 0); // Dark Grey
         }
+        lv_timer_set_period(timer, is_moving ? 33 : 200); // 30Hz active, 5Hz idle
         was_moving = is_moving;
     }
     dspm::Mat T = dspm::Mat::eye(MATRIX_SIZE);

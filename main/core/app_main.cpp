@@ -1,3 +1,4 @@
+#include "esp_pm.h"
 #include "power_manager.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
@@ -33,6 +34,17 @@ extern "C" void app_main(void) {
     pmic_data[0] = 0x05; pmic_data[1] = 0x00; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
     pmic_data[0] = 0x02; pmic_data[1] = 0xFF; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
     pmic_data[0] = 0x03; pmic_data[1] = 0xFF; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
+    
+    // ARCHITECT FIX: Enable Dynamic Frequency Scaling (DFS)
+#if CONFIG_PM_ENABLE
+    esp_pm_config_t pm_config = {
+        .max_freq_mhz = 160,
+        .min_freq_mhz = 40,
+        .light_sleep_enable = true
+    };
+    esp_pm_configure(&pm_config);
+#endif
+
     ui_render_init();
     power_manager_init(); // CRITICAL: Ignite Background Power Daemon
     imu_hal_init();
