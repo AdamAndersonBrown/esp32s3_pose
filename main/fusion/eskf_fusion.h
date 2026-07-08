@@ -16,6 +16,7 @@ typedef struct {
     bool is_deadlocked;
     bool is_moving;
     int pmic_percentage;
+    bool is_sleeping;
 } eskf_state_t;
 
 #ifdef __cplusplus

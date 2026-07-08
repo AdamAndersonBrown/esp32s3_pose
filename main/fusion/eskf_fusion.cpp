@@ -169,6 +169,27 @@ static void eskf_physics_task(void *pvParameters) {
             
             
 
+
+            // --- DYNAMIC HARDWARE SLEEP (BACKLIGHT & CPU THROTTLE) ---
+            static uint32_t idle_frames = 0;
+            static bool backlight_on = true;
+
+            if (is_moving) {
+                idle_frames = 0;
+                if (!backlight_on) {
+                    uint8_t pmic_data[2] = {0x99, 0x1D}; // Restore DLDO1 to 3.4V (Max Brightness)
+                    i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x34, pmic_data, 2, 100);
+                    backlight_on = true;
+                }
+            } else {
+                if (idle_frames < 1000) { // 1000 frames at ~100Hz = 10 seconds
+                    idle_frames++;
+                } else if (backlight_on) {
+                    uint8_t pmic_data[2] = {0x99, 0x00}; // Drop DLDO1 to 0.5V (Backlight Off)
+                    i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x34, pmic_data, 2, 100);
+                    backlight_on = false;
+                }
+            }
             // --- TELEMETRY LOGGING ---
             static uint32_t kin_debug = 0;
             if (kin_debug++ % 20 == 0) {
@@ -200,6 +221,7 @@ static void eskf_physics_task(void *pvParameters) {
             global_state.q = current_q;
             global_state.is_deadlocked = !sensor_data.mag_valid;
             if (pmic_timer % 100 == 1) global_state.pmic_percentage = bat_pct;
+            global_state.is_sleeping = !backlight_on;
             global_state.is_moving = is_moving;
             for(int i=0; i<3; i++) {
                 global_state.vel[i] = vel_ned[i];
