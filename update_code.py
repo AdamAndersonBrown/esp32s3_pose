@@ -1,50 +1,63 @@
 import os
-import re
 
-def sever_unused_silicon():
-    pm_path = "main/core/power_manager.cpp"
-    if not os.path.exists(pm_path):
-        print(f"ERROR: {pm_path} not found.")
-        return
-
-    with open(pm_path, 'r') as f:
-        content = f.read()
-
-    # The hardware excision function
-    excision_logic = """
-// Architect Helper: Kill unused CoreS3 Silicon (Camera & Audio Amp)
-static void sever_extraneous_hardware() {
-    uint8_t aldo_reg = 0x92; // AXP2101 ALDO1-4 ON/OFF Register
-    uint8_t aldo_val = 0;
-    
-    // Read current LDO states
-    if (i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &aldo_reg, 1, &aldo_val, 1, 100) == ESP_OK) {
-        // CoreS3 Map: ALDO1 (Cam 1.8V), ALDO2 (Cam 2.8V), ALDO3 (Audio 3.3V)
-        // We mask off bits 0, 1, and 2 to physically sever power to these chips.
-        uint8_t optimized_val = aldo_val & ~0x07; 
+def force_charging_floodgates():
+    # 1. Update the Header File
+    const_path = "main/core/pmic_constants.h"
+    if os.path.exists(const_path):
+        with open(const_path, 'r') as f:
+            content = f.read()
         
-        if (aldo_val != optimized_val) {
-            uint8_t pmic_data[2] = {aldo_reg, optimized_val};
-            i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, pmic_data, 2, 100);
-            ESP_LOGI(TAG, "Hardware Severed: Camera and Audio Amplifier power rails disabled.");
-        }
+        if "PMIC_REG_VBUS_LIMIT" not in content:
+            content += "\n// --- CHARGING REGISTERS ---\n"
+            content += "#define PMIC_REG_VBUS_LIMIT    0x16\n"
+            content += "#define PMIC_REG_CHG_CTRL      0x18\n"
+            with open(const_path, 'w') as f:
+                f.write(content)
+            print("Patched: pmic_constants.h (Injected VBUS/Charging definitions)")
+
+    # 2. Update the Power Manager Daemon
+    pm_path = "main/core/power_manager.cpp"
+    if os.path.exists(pm_path):
+        with open(pm_path, 'r') as f:
+            content = f.read()
+
+        floodgate_logic = """
+// Architect Helper: Maximize USB-C Input and Battery Charging
+static void open_charging_floodgates() {
+    uint8_t reg_vbus = PMIC_REG_VBUS_LIMIT;
+    uint8_t val_vbus = 0;
+    
+    // Set VBUS Input Limit to 1500mA (1.5A) - Overrides BSP defaults
+    if (i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &reg_vbus, 1, &val_vbus, 1, 100) == ESP_OK) {
+        val_vbus = (val_vbus & 0xF8) | 0x04; // 0x04 = 1.5A limit
+        uint8_t write_data[2] = {reg_vbus, val_vbus};
+        i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, write_data, 2, 100);
     }
+
+    // Force Charge Enable Bit
+    uint8_t reg_chg = PMIC_REG_CHG_CTRL;
+    uint8_t val_chg = 0;
+    if (i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &reg_chg, 1, &val_chg, 1, 100) == ESP_OK) {
+        val_chg = val_chg | 0x02; // Bit 1 enables charging
+        uint8_t write_data[2] = {reg_chg, val_chg};
+        i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, write_data, 2, 100);
+    }
+    
+    ESP_LOGI(TAG, "Hardware Overridden: VBUS Limit expanded to 1.5A. Charging forcefully enabled.");
 }
 """
-
-    if "sever_extraneous_hardware" not in content:
-        # Inject the function directly above the task definition
-        content = content.replace("void power_manager_task(void *pvParameters) {", excision_logic + "\nvoid power_manager_task(void *pvParameters) {")
-        
-        # Call the function exactly once during the daemon boot
-        content = content.replace('ESP_LOGI(TAG, "Power Manager Daemon Booted on Core 0.");', 
-                                  'ESP_LOGI(TAG, "Power Manager Daemon Booted on Core 0.");\n    sever_extraneous_hardware();')
-        
-        with open(pm_path, 'w') as f:
-            f.write(content)
-        print("Patched: power_manager.cpp (Injected ALDO power rail severance for unused silicon)")
-    else:
-        print("Hardware severance already implemented.")
+        if "open_charging_floodgates" not in content:
+            # Inject the function definition right before power_manager_task
+            content = content.replace("void power_manager_task(void *pvParameters) {", floodgate_logic + "\nvoid power_manager_task(void *pvParameters) {")
+            
+            # Inject the function call right after sever_extraneous_hardware()
+            content = content.replace("    sever_extraneous_hardware();", "    sever_extraneous_hardware();\n    open_charging_floodgates();")
+            
+            with open(pm_path, 'w') as f:
+                f.write(content)
+            print("Patched: power_manager.cpp (Injected VBUS 1.5A limit override and charge enabler)")
+        else:
+            print("Charging floodgates already exist in power_manager.cpp.")
 
 if __name__ == "__main__":
-    sever_unused_silicon()
+    force_charging_floodgates()

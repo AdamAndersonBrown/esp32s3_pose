@@ -8,3 +8,7 @@
 #define PMIC_DLDO1_3V4_MAX     0x1D
 #define PMIC_DLDO1_2V7_DIM     0x16
 #define PMIC_DLDO1_0V5_OFF     0x00
+
+// --- CHARGING REGISTERS ---
+#define PMIC_REG_VBUS_LIMIT    0x16
+#define PMIC_REG_CHG_CTRL      0x18

@@ -41,9 +41,35 @@ static void sever_extraneous_hardware() {
     }
 }
 
+
+// Architect Helper: Maximize USB-C Input and Battery Charging
+static void open_charging_floodgates() {
+    uint8_t reg_vbus = PMIC_REG_VBUS_LIMIT;
+    uint8_t val_vbus = 0;
+    
+    // Set VBUS Input Limit to 1500mA (1.5A) - Overrides BSP defaults
+    if (i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &reg_vbus, 1, &val_vbus, 1, 100) == ESP_OK) {
+        val_vbus = (val_vbus & 0xF8) | 0x04; // 0x04 = 1.5A limit
+        uint8_t write_data[2] = {reg_vbus, val_vbus};
+        i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, write_data, 2, 100);
+    }
+
+    // Force Charge Enable Bit
+    uint8_t reg_chg = PMIC_REG_CHG_CTRL;
+    uint8_t val_chg = 0;
+    if (i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &reg_chg, 1, &val_chg, 1, 100) == ESP_OK) {
+        val_chg = val_chg | 0x02; // Bit 1 enables charging
+        uint8_t write_data[2] = {reg_chg, val_chg};
+        i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, write_data, 2, 100);
+    }
+    
+    ESP_LOGI(TAG, "Hardware Overridden: VBUS Limit expanded to 1.5A. Charging forcefully enabled.");
+}
+
 void power_manager_task(void *pvParameters) {
     ESP_LOGI(TAG, "Power Manager Daemon Booted on Core 0.");
     sever_extraneous_hardware();
+    open_charging_floodgates();
     uint32_t tick_count = 0;
     while(1) {
         bool moving = global_state.is_moving;
