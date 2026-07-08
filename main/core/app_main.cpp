@@ -39,7 +39,7 @@ extern "C" void app_main(void) {
 #if CONFIG_PM_ENABLE
     esp_pm_config_t pm_config = {
         .max_freq_mhz = 160,
-        .min_freq_mhz = 40,
+        .min_freq_mhz = 80, // ARCHITECT FIX: Lock APB bus to 80MHz to prevent legacy I2C corruption
         .light_sleep_enable = true
     };
     esp_pm_configure(&pm_config);

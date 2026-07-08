@@ -12,3 +12,7 @@
 // --- CHARGING REGISTERS ---
 #define PMIC_REG_VBUS_LIMIT    0x16
 #define PMIC_REG_CHG_CTRL      0x18
+
+// --- TELEMETRY REGISTERS ---
+#define PMIC_REG_PMU_STATUS    0x00
+#define PMIC_REG_CHG_STATUS    0x01

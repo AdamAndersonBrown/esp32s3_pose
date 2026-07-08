@@ -83,16 +83,16 @@ void power_manager_task(void *pvParameters) {
                 ESP_LOGI(TAG, "Kinematic Disturbance Detected: Screen Restored (100%%)");
             }
         } else {
-            if (idle_ticks < 3000) idle_ticks++;
+            if (idle_ticks < 1000) idle_ticks++;
             
             if (idle_ticks == 100 && backlight_state == 2) { // 10s
                 set_backlight_voltage(PMIC_DLDO1_2V7_DIM);
                 backlight_state = 1;
                 ESP_LOGI(TAG, "10s Idle Threshold Met: Screen Dimmed (10%%)");
-            } else if (idle_ticks == 3000 && backlight_state == 1) { // 300s
+            } else if (idle_ticks == 600 && backlight_state == 1) { // 300s
                 set_backlight_voltage(PMIC_DLDO1_0V5_OFF);
                 backlight_state = 0;
-                ESP_LOGI(TAG, "300s Idle Threshold Met: Screen Off (0%%), Graphics Halted.");
+                ESP_LOGI(TAG, "60s Idle Threshold Met: Screen Off (0%%), Graphics Halted.");
             }
         }
 
@@ -106,6 +106,25 @@ void power_manager_task(void *pvParameters) {
                 if (pct_val <= 100) global_state.pmic_percentage = (int)pct_val;
             } else {
                 ESP_LOGE(TAG, "Failed to read E-Gauge (0x%X).", err);
+            }
+        }
+
+        
+        // --- HARDWARE AUDIT & ENFORCEMENT (Every 5 Seconds) ---
+        if (tick_count % 50 == 0) {
+            uint8_t regs[4] = {PMIC_REG_PMU_STATUS, PMIC_REG_CHG_STATUS, PMIC_REG_VBUS_LIMIT, PMIC_REG_CHG_CTRL};
+            uint8_t vals[4] = {0, 0, 0, 0};
+            
+            for(int i=0; i<4; i++) {
+                i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &regs[i], 1, &vals[i], 1, 100);
+            }
+
+            ESP_LOGI(TAG, "PMIC AUDIT | VBUS Limit Reg: 0x%02X | Chg Ctrl Reg: 0x%02X | PMU Stat: 0x%02X | Chg Stat: 0x%02X", vals[2], vals[3], vals[0], vals[1]);
+
+            // VBUS Limit Check: Ensure the bottom 3 bits are still 0x04 (1.5A)
+            if ((vals[2] & 0x07) != 0x04) {
+                ESP_LOGW(TAG, "Hardware override dropped! Re-opening charging floodgates...");
+                open_charging_floodgates();
             }
         }
 
