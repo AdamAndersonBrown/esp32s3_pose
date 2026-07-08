@@ -1,3 +1,5 @@
+#include "driver/i2c.h"
+#include "bsp/m5stack_core_s3.h"
 #include "eskf_fusion.h"
 #include "physics_constants.h"
 #include "calibration.h"
@@ -60,6 +62,12 @@ static void eskf_physics_task(void *pvParameters) {
             }
 
             // ====================================================================
+            // 0.5 SILICON HARDWARE BIAS COMPENSATION
+            // Derived from static telemetry averages
+            sensor_data.gyr_x -= -0.04f;
+            sensor_data.gyr_y -= 2.24f;
+            sensor_data.gyr_z -= -1.79f;
+
             // 1. STANDARD HARD-IRON CALIBRATION
             // ====================================================================
             float hx = sensor_data.mag_x;
@@ -177,10 +185,21 @@ static void eskf_physics_task(void *pvParameters) {
                 */
             }
 
+            
+            // --- 1Hz PMIC POWER POLLING ---
+            static uint32_t pmic_timer = 0;
+            static int bat_pct = 0; // Static scoping ensures value survives the frame tick
+            if (pmic_timer++ % 100 == 0) { // IMU Queue runs at ~100Hz
+                uint8_t reg_pct = 0xA4; uint8_t pct_val = 0;
+                i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, 0x34, &reg_pct, 1, &pct_val, 1, 100);
+                if (pct_val <= 100) bat_pct = (int)pct_val; // Sanity bounds
+            }
+
             // ARCHITECT FIX: Thread Decoupling. Update locked state instead of calling UI.
             taskENTER_CRITICAL(&state_spinlock);
             global_state.q = current_q;
             global_state.is_deadlocked = !sensor_data.mag_valid;
+            if (pmic_timer % 100 == 1) global_state.pmic_percentage = bat_pct;
             global_state.is_moving = is_moving;
             for(int i=0; i<3; i++) {
                 global_state.vel[i] = vel_ned[i];

@@ -16,8 +16,8 @@
 
 // ZUPT THRESHOLDS: Derived from 12-hour empirical static capture.
 // Accel Max Dev: ~7 LSB (0.0034 G) | Gyro Max Dev: ~2 LSB (0.122 DPS)
-#define ZUPT_ACCEL_TOLERANCE_G 0.01f
-#define ZUPT_GYRO_TOLERANCE_DPS 0.5f
+#define ZUPT_ACCEL_TOLERANCE_G 0.005f  // Tightened (Max Static STD was 1.7 LSB)
+#define ZUPT_GYRO_TOLERANCE_DPS 0.15f // Tightened (Max Static STD was 0.6 LSB)
 // ====================================================================
 
 static float gx = 0, gy = 0, gz = 0;

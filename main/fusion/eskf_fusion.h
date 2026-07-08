@@ -15,6 +15,7 @@ typedef struct {
     float pure_pos[3];
     bool is_deadlocked;
     bool is_moving;
+    int pmic_percentage;
 } eskf_state_t;
 
 #ifdef __cplusplus

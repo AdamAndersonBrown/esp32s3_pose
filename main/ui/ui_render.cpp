@@ -1,3 +1,6 @@
+#include "esp_lvgl_port.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "ui_render.h"
 #include "hal_imu.h"
 #include "hal_touch.h"
@@ -29,6 +32,7 @@ static lv_point_precise_t *points;
 static lv_obj_t *status_indicator;
 static lv_obj_t *vel_label;
 static lv_obj_t *pos_label;
+static lv_obj_t * pmic_label;
 
 // ARCHITECT FIX: Calibration Overlay Objects
 static lv_obj_t * calib_overlay;
@@ -92,6 +96,7 @@ static void calib_btn_event_cb(lv_event_t * e) {
 }
 
 void ui_render_init(void) {
+
     vTaskDelay(pdMS_TO_TICKS(300)); // Let LVGL boot safely
 
     display = bsp_display_start();
@@ -103,7 +108,8 @@ void ui_render_init(void) {
     image.matrix = jet_vectors_3d;
     image.matrix_len = JET_POINTS;
 
-    while(!bsp_display_lock(1000)) { vTaskDelay(1); }
+    while(lv_scr_act() == NULL) { vTaskDelay(10); }
+    lvgl_port_lock(0xFFFFFFFF);
 
     // ARCHITECT FIX: Bind Bare-Metal Touch to LVGL
     lv_indev_t * indev = lv_indev_create();
@@ -181,20 +187,30 @@ void ui_render_init(void) {
     
     // Ping physics state safely INSIDE the mutex
     
+    // CRITICAL: Start the 20Hz rendering loop!
+    pmic_label = lv_label_create(lv_scr_act());
+    lv_label_set_text(pmic_label, "PWR: -- mA");
+    lv_obj_align(pmic_label, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+    lv_obj_set_style_text_color(pmic_label, lv_color_hex(0xFFFFFF), 0);
+
     lv_timer_create(ui_render_timer_cb, 50, NULL);
-    bsp_display_unlock();
+    lvgl_port_unlock();
     
     }
 
 // ARCHITECT FIX: Native LVGL Timer Callback (runs safely in UI thread)
 static void ui_render_timer_cb(lv_timer_t * timer) {
+    if (pmic_label == NULL) return;
+
     eskf_state_t state;
     eskf_get_latest_state(&state);
     
     quaternion_t *q = &state.q;
+    lv_label_set_text_fmt(pmic_label, "BAT: %d%%", state.pmic_percentage);
     bool is_deadlocked = state.is_deadlocked;
     float *vel = state.vel;
     float *pos = state.pos;
+    (void)pos; // Suppress unused variable warning
     float *pure_pos = state.pure_pos;
     bool is_moving = state.is_moving;
 
@@ -224,7 +240,8 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
     transformed_image = matrix_3d * T;
     projected_image = transformed_image * perspective_matrix;
 
-    while(!bsp_display_lock(1000)) { vTaskDelay(1); }
+    while(lv_scr_act() == NULL) { vTaskDelay(10); }
+    lvgl_port_lock(0xFFFFFFFF);
     
     // ARCHITECT FIX: UI Overlay State Polling
     static bool was_calibrating = false;
@@ -265,5 +282,5 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
 
     
     // Ping physics state safely INSIDE the mutex
-    bsp_display_unlock();
+    lvgl_port_unlock();
 }
