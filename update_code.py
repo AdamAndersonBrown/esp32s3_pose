@@ -1,7 +1,7 @@
 import os
 import re
 
-def fix_ui_sleep_panic():
+def fix_lvgl_boot_race():
     filepath = "main/ui/ui_render.cpp"
     if not os.path.exists(filepath):
         print(f"ERROR: {filepath} not found.")
@@ -10,27 +10,25 @@ def fix_ui_sleep_panic():
     with open(filepath, 'r') as f:
         content = f.read()
 
-    # 1. Remove the dangerous early return
-    target_bad_return = r'if\s*\(state\.is_sleeping\)\s*return;\s*//\s*Halt\s*heavy\s*graphics\s*math\s*while\s*screen\s*is\s*off\n\s*'
-    content = re.sub(target_bad_return, '', content)
+    # 1. Excise the illegally placed styling command that occurs before the lock
+    bad_style = r'[ \t]*// ARCHITECT FIX: Set initial screen background to dark grey\n[ \t]*lv_obj_set_style_bg_color\(lv_screen_active\(\), lv_color_hex\(0x222222\), 0\);\n'
+    content = re.sub(bad_style, '', content)
 
-    # 2. Wrap only the heavy 3D rendering in the sleep check
-    # Find the start of the heavy math (usually right after the state assignment)
-    math_start = "float *vel = state.vel;\n"
-    math_end = "    // Update Labels"
-    
-    if math_start in content and math_end in content:
-        parts = content.split(math_start, 1)
-        inner_parts = parts[1].split(math_end, 1)
-        
-        safe_block = math_start + "    if (!state.is_sleeping) {\n" + inner_parts[0] + "    }\n\n" + math_end
-        content = parts[0] + safe_block + inner_parts[1]
-        print("Patched: ui_render.cpp (Wrapped 3D math safely, preserved LVGL object updates)")
+    # 2. Fix the overflowed lock and inject the styling command securely inside the boundary
+    bad_lock = r'lvgl_port_lock\(0xFFFFFFFF\);'
+    safe_lock = (
+        "while(!lvgl_port_lock(100)) { vTaskDelay(pdMS_TO_TICKS(10)); }\n\n"
+        "    // ARCHITECT FIX: Safely apply background color inside the secured mutex\n"
+        "    lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(0x222222), 0);"
+    )
+
+    if re.search(bad_lock, content):
+        content = re.sub(bad_lock, safe_lock, content)
+        with open(filepath, 'w') as f:
+            f.write(content)
+        print("Patched: ui_render.cpp (Relocated LVGL styling inside safe mutex boundary)")
     else:
-        print("Could not find the bounds to wrap the 3D math.")
+        print("Error: Could not find lvgl_port_lock(0xFFFFFFFF);")
 
-    with open(filepath, 'w') as f:
-        f.write(content)
-
-if __name__ == "__main__":
-    fix_ui_sleep_panic()
+if __name__ == '__main__':
+    fix_lvgl_boot_race()

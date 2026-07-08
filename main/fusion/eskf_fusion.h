@@ -19,6 +19,8 @@ typedef struct {
     bool is_sleeping;
 } eskf_state_t;
 
+extern eskf_state_t global_state;
+
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -102,14 +102,15 @@ void ui_render_init(void) {
     display = bsp_display_start();
     init_perspective_matrix(perspective_matrix);
     
-    // ARCHITECT FIX: Set initial screen background to dark grey
-    lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(0x222222), 0);
     
     image.matrix = jet_vectors_3d;
     image.matrix_len = JET_POINTS;
 
     while(lv_scr_act() == NULL) { vTaskDelay(10); }
-    lvgl_port_lock(0xFFFFFFFF);
+    while(!lvgl_port_lock(100)) { vTaskDelay(pdMS_TO_TICKS(10)); }
+
+    // ARCHITECT FIX: Safely apply background color inside the secured mutex
+    lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(0x222222), 0);
 
     // ARCHITECT FIX: Bind Bare-Metal Touch to LVGL
     lv_indev_t * indev = lv_indev_create();
@@ -228,7 +229,8 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
     dspm::Mat projected_image(image.matrix_len, MATRIX_SIZE);
     dspm::Mat matrix_3d((float *)image.matrix[0], image.matrix_len, MATRIX_SIZE);
 
-    float q_array[4] = {q->q0, q->q1, q->q2, q->q3};
+    if (!state.is_sleeping) {
+        float q_array[4] = {q->q0, q->q1, q->q2, q->q3};
     dspm::Mat R1 = ekf::quat2rotm(q_array);       
     
     for (int r = 0; r < 3; r++) {
@@ -239,9 +241,13 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
 
     transformed_image = matrix_3d * T;
     projected_image = transformed_image * perspective_matrix;
+    }
 
     while(lv_scr_act() == NULL) { vTaskDelay(10); }
-    lvgl_port_lock(0xFFFFFFFF);
+    while(!lvgl_port_lock(100)) { vTaskDelay(pdMS_TO_TICKS(10)); }
+
+    // ARCHITECT FIX: Safely apply background color inside the secured mutex
+    lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(0x222222), 0);
     
     // ARCHITECT FIX: UI Overlay State Polling
     static bool was_calibrating = false;
@@ -257,7 +263,8 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
         was_calibrating = is_calib;
     }
 
-    for (uint8_t i = 0; i < JET_EDGES; i++) {
+    if (!state.is_sleeping) {
+        for (uint8_t i = 0; i < JET_EDGES; i++) {
         points[i * 2 + 0].x =  (int16_t)projected_image(jet_line_begin[i], 0) + (BSP_LCD_H_RES / 2);
         points[i * 2 + 0].y = -(int16_t)projected_image(jet_line_begin[i], 1) + (BSP_LCD_V_RES / 2);
         points[i * 2 + 1].x =  (int16_t)projected_image(jet_line_end[i], 0) + (BSP_LCD_H_RES / 2);
@@ -265,6 +272,7 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
         
         lv_line_set_points(objs[i], &points[i * 2 + 0], 2);
         lv_obj_set_pos(objs[i], 0, 0);
+    }
     }
 
     if (is_deadlocked) {

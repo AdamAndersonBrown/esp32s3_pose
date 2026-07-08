@@ -1,3 +1,4 @@
+#include "power_manager.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "driver/i2c.h"
@@ -32,6 +33,7 @@ extern "C" void app_main(void) {
     pmic_data[0] = 0x02; pmic_data[1] = 0xFF; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
     pmic_data[0] = 0x03; pmic_data[1] = 0xFF; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
     ui_render_init();
+    power_manager_init(); // CRITICAL: Ignite Background Power Daemon
     imu_hal_init();
     eskf_fusion_init();
 

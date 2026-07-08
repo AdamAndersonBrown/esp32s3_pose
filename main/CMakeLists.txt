@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
-                    "hal/hal_imu.cpp"
+                    "core/power_manager.cpp"
+    "hal/hal_imu.cpp"
                     "hal/hal_touch.cpp"
                     "fusion/eskf_fusion.cpp"
                     "fusion/calibration.cpp"
