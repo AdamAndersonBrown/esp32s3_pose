@@ -227,12 +227,10 @@ static void ui_render_timer_cb(lv_timer_t * timer) {
     float *pos = state.pos;
     (void)pos; // Suppress unused variable warning
     if(temp_label != NULL) {
-        uint32_t packed = (uint32_t)global_state.system_temp;
-        // R0: PMU Status | R1: Chg Status | EG: E-Gauge (0xA4)
-        lv_label_set_text_fmt(temp_label, "R0:%02X R1:%02X EG:%02X", 
-                             (unsigned int)((packed >> 16) & 0xFF), 
-                             (unsigned int)((packed >> 8) & 0xFF), 
-                             (unsigned int)(packed & 0xFF));
+        int temp_whole = (int)global_state.system_temp;
+        int temp_frac = (int)((global_state.system_temp - temp_whole) * 10.0f);
+        if (temp_frac < 0) temp_frac = -temp_frac; 
+        lv_label_set_text_fmt(temp_label, "SYS: %d.%d C", temp_whole, temp_frac);
     }
     float *pure_pos = state.pure_pos;
     bool is_moving = state.is_moving;

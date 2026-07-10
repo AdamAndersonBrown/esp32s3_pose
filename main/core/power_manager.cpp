@@ -182,9 +182,11 @@ void power_manager_task(void *pvParameters) {
                 if (i2c_success) {
                     if (vals[2] <= 100) global_state.pmic_percentage = (int)vals[2]; // E-Gauge sync
                     
-                    // X-Ray: Pack Reg 0x00, Reg 0x01, and E-Gauge
-                    uint32_t packed = (vals[0] << 16) | (vals[1] << 8) | vals[2];
-                    global_state.system_temp = (float)packed;
+                    if (temp_handle != NULL) {
+                        float tsens_value = 0.0f;
+                        temperature_sensor_get_celsius(temp_handle, &tsens_value);
+                        global_state.system_temp = tsens_value;
+                    }
                     
                     // True VBUS Valid check (Bit 5 of Reg 0x00)
                     global_state.is_charging = ((vals[0] & 0x20) != 0); 
