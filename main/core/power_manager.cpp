@@ -32,7 +32,10 @@ static void sever_extraneous_hardware() {
         // ARCHITECT FIX: Force ALDO 1, 2, 3, and 4 back ON.
         // The PMIC retains states across warm reboots. We must explicitly re-enable 
         // the rails that power the AW9523B GPIO expander to unbrick the IMU interrupt.
-        uint8_t optimized_val = aldo_val | 0x0F; 
+        // ARCHITECT FIX: Hardware Severance. 
+        // 0x0A (0000 1010) keeps ALDO2 (LCD) and ALDO4 (Touch/AW9523B) ON.
+        // It actively KILLS ALDO 1 and 3 (Audio Amp, Camera).
+        uint8_t optimized_val = (aldo_val & 0xF0) | 0x0A; 
         
         if (aldo_val != optimized_val) {
             uint8_t pmic_data[2] = {aldo_reg, optimized_val};
@@ -59,7 +62,7 @@ static void open_charging_floodgates() {
     
     // Set VBUS Input Limit to 1500mA (1.5A) - Overrides BSP defaults
     if (i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &reg_vbus, 1, &val_vbus, 1, 100) == ESP_OK) {
-        val_vbus = (val_vbus & 0xF8) | 0x01; // ARCHITECT FIX: 0x01 = 500mA limit to prevent PC polyfuse trip
+        val_vbus = (val_vbus & 0xF8) | 0x04; // ARCHITECT FIX: Unified to 1.5A (0x04)
         uint8_t write_data[2] = {reg_vbus, val_vbus};
         i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, write_data, 2, 100);
     }
@@ -96,7 +99,7 @@ void power_manager_task(void *pvParameters) {
 
     ESP_LOGI(TAG, "Power Manager Daemon Booted on Core 0.");
     sever_extraneous_hardware();
-    // open_charging_floodgates(); // ARCHITECT FIX: Chesterton's Fence. Let the AXP2101 manage itself.
+    open_charging_floodgates(); // ARCHITECT FIX: UNCOMMENTED! Take down the fence.
     uint32_t tick_count = 0;
     while(1) {
         bool moving = global_state.is_moving;
@@ -157,8 +160,8 @@ void power_manager_task(void *pvParameters) {
 
                 uint8_t reg62 = 0x62, val62 = 0; // Charge Current
                 i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &reg62, 1, &val62, 1, 100);
-                if (val62 != 0x13) { // Force 1.0A
-                    uint8_t write62[2] = {0x62, 0x13};
+                if (val62 != 0x1B) { // ARCHITECT FIX: Align to 1.0A (0x1B) instead of 0x13
+                    uint8_t write62[2] = {0x62, 0x1B};
                     i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, write62, 2, 100);
                 }
 
@@ -201,9 +204,9 @@ void power_manager_task(void *pvParameters) {
             ESP_LOGI(TAG, "PMIC AUDIT | Bat: %d%% | VBUS: 0x%02X | ChgCtrl: 0x%02X | ChgCur: 0x%02X | PMU Stat: 0x%02X | Chg Stat: 0x%02X", global_state.pmic_percentage, vals[2], vals[3], vals[4], vals[0], vals[1]);
 
             // VBUS Limit Check (1.5A) OR Charge Current Check (1.0A = 0x1B)
-            if (((vals[2] & 0x07) != 0x01) || (vals[4] != 0x1B)) { // ARCHITECT FIX: Audit for 500mA
+            if (((vals[2] & 0x07) != 0x04) || (vals[4] != 0x1B)) { // ARCHITECT FIX: Audit for 500mA
                 ESP_LOGW(TAG, "Hardware override dropped! Re-opening charging floodgates...");
-                // open_charging_floodgates(); // ARCHITECT FIX: Chesterton's Fence. Let the AXP2101 manage itself.
+                open_charging_floodgates(); // ARCHITECT FIX: UNCOMMENTED! Take down the fence.
             }
         }
 
