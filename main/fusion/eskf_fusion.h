@@ -17,8 +17,8 @@ typedef struct {
     volatile bool is_moving;
     volatile int pmic_percentage;
     volatile bool is_sleeping;
-    bool is_charging;
-    float system_temp; // ARCHITECT FIX: Thermal telemetry
+    volatile bool is_charging;
+    volatile float system_temp; // ARCHITECT FIX: Thermal telemetry
 } eskf_state_t;
 
 extern eskf_state_t global_state;

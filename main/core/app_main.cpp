@@ -29,11 +29,26 @@ extern "C" void app_main(void) {
     pmic_data[0] = 0x93; pmic_data[1] = 0x1D; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x34, pmic_data, 2, 100);
     pmic_data[0] = 0x99; pmic_data[1] = 0x1D; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x34, pmic_data, 2, 100);
     vTaskDelay(pdMS_TO_TICKS(50));
-    pmic_data[0] = 0x12; pmic_data[1] = 0x00; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
-    pmic_data[0] = 0x04; pmic_data[1] = 0x00; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
-    pmic_data[0] = 0x05; pmic_data[1] = 0x00; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
-    pmic_data[0] = 0x02; pmic_data[1] = 0xFF; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
-    pmic_data[0] = 0x03; pmic_data[1] = 0xFF; i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
+    // 1. Configure Port 0 as GPIO Push-Pull Mode (0xFF = GPIO, 0x00 = LED mode)
+    // ARCHITECT FIX: This clears the LED open-drain trap!
+    pmic_data[0] = 0x12; pmic_data[1] = 0xFF; 
+    i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
+
+    // 2. Set AW9523B Port 0 and Port 1 Direction to OUTPUT (0x00 = Output)
+    pmic_data[0] = 0x04; pmic_data[1] = 0x00; 
+    i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
+    pmic_data[0] = 0x05; pmic_data[1] = 0x00; 
+    i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
+
+    // 3. SEVER THE OUROBOROS LOOP (Port 0)
+    // CoreS3 Pinmap: P0_5 is USB_OTG_EN. We force it LOW by masking with 0xDF (1101 1111).
+    // We leave other bits HIGH to prevent resetting the touch IC (P0_0) and microSD (P0_4).
+    pmic_data[0] = 0x02; pmic_data[1] = 0xDF; 
+    i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100); // FIXED: Added missing execution call
+
+    // 4. Configure Internal Peripherals (Port 1)
+    pmic_data[0] = 0x03; pmic_data[1] = 0xFF; 
+    i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, pmic_data, 2, 100);
     
     // ARCHITECT FIX: Enable Dynamic Frequency Scaling (DFS)
 #if CONFIG_PM_ENABLE

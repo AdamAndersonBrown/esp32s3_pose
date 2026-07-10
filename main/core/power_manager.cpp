@@ -59,7 +59,7 @@ static void open_charging_floodgates() {
     
     // Set VBUS Input Limit to 1500mA (1.5A) - Overrides BSP defaults
     if (i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &reg_vbus, 1, &val_vbus, 1, 100) == ESP_OK) {
-        val_vbus = (val_vbus & 0xF8) | 0x04; // 0x04 = 1.5A limit
+        val_vbus = (val_vbus & 0xF8) | 0x01; // ARCHITECT FIX: 0x01 = 500mA limit to prevent PC polyfuse trip
         uint8_t write_data[2] = {reg_vbus, val_vbus};
         i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, write_data, 2, 100);
     }
@@ -96,7 +96,7 @@ void power_manager_task(void *pvParameters) {
 
     ESP_LOGI(TAG, "Power Manager Daemon Booted on Core 0.");
     sever_extraneous_hardware();
-    open_charging_floodgates();
+    // open_charging_floodgates(); // ARCHITECT FIX: Chesterton's Fence. Let the AXP2101 manage itself.
     uint32_t tick_count = 0;
     while(1) {
         bool moving = global_state.is_moving;
@@ -116,7 +116,7 @@ void power_manager_task(void *pvParameters) {
                 set_backlight_voltage(PMIC_DLDO1_2V7_DIM);
                 backlight_state = 1;
                 ESP_LOGI(TAG, "10s Idle Threshold Met: Screen Dimmed (10%%)");
-            } else if (idle_ticks == 600 && backlight_state == 1) { // 300s
+            } else if (idle_ticks == 600 && backlight_state == 1) { // 60s
                 set_backlight_voltage(PMIC_DLDO1_0V5_OFF);
                 backlight_state = 0;
                 ESP_LOGI(TAG, "60s Idle Threshold Met: Screen Off (0%%), Graphics Halted.");
@@ -124,29 +124,71 @@ void power_manager_task(void *pvParameters) {
         }
 
         // --- E-GAUGE & CHARGE STATUS POLLING (1Hz) ---
+        // ARCHITECT FIX: Thread-safe I2C Mutex to prevent AW9523B/PMIC bus collisions
+        static SemaphoreHandle_t pmic_i2c_mutex = NULL;
+        if (pmic_i2c_mutex == NULL) pmic_i2c_mutex = xSemaphoreCreateMutex();
+
         if (tick_count % 10 == 0) {
-            uint8_t regs[2] = {PMIC_REG_BAT_PERCENT, PMIC_REG_PMU_STATUS}; // ARCHITECT FIX: Target VBUS Status (0x00)
-            uint8_t vals[2] = {0, 0};
-            
-            esp_err_t err1 = i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &regs[0], 1, &vals[0], 1, 100);
-            esp_err_t err2 = i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &regs[1], 1, &vals[1], 1, 100);
-            
-            if (err1 == ESP_OK && vals[0] <= 100) {
-                global_state.pmic_percentage = (int)vals[0];
-            }
-            
-            if (temp_handle != NULL) {
-                float tsens_value;
-                temperature_sensor_get_celsius(temp_handle, &tsens_value);
-                global_state.system_temp = tsens_value;
-            }
-            if (err2 == ESP_OK) {
-                // If Chg Stat is > 0x00, the hardware is actively routing current
-                global_state.is_charging = ((vals[1] & 0x10) != 0); // ARCHITECT FIX: Mask Bit 4 (0x10) to detect active USB power
+            if (xSemaphoreTake(pmic_i2c_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                
+                // 1. HARDWARE ROUTER: Safely Audit and Enforce OTG Severance
+                uint8_t aw_conf_read = 0x04, aw_conf_val = 0;
+                i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, 0x58, &aw_conf_read, 1, &aw_conf_val, 1, 100);
+
+                // Enforce P0_5 (USB_OTG_EN) remains an Output (& 0xDF)
+                uint8_t aw_conf_write[2] = {0x04, (uint8_t)(aw_conf_val & 0xDF)}; 
+                i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, aw_conf_write, 2, 100);
+
+                uint8_t aw_out_read = 0x02, aw_out_val = 0;
+                i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, 0x58, &aw_out_read, 1, &aw_out_val, 1, 100);
+
+                // ARCHITECT FIX: Force Bit 5 (USB_OTG_EN) LOW (& 0xDF). 
+                // Do NOT use & 0xCF or | 0x10. We must not touch Bit 4 (TF_SW) or Bit 0 (TOUCH).
+                uint8_t aw_out_write[2] = {0x02, (uint8_t)(aw_out_val & 0xDF)}; 
+                i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, 0x58, aw_out_write, 2, 100);
+
+                // 2. SILENT REVERSION AUDIT: Force Floodgates Open against PMIC brownouts
+                uint8_t reg16 = 0x16, val16 = 0; // VBUS Limit
+                i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &reg16, 1, &val16, 1, 100);
+                if ((val16 & 0x07) != 0x04) { // Force 1.5A
+                    uint8_t write16[2] = {0x16, (uint8_t)((val16 & 0xF8) | 0x04)};
+                    i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, write16, 2, 100);
+                }
+
+                uint8_t reg62 = 0x62, val62 = 0; // Charge Current
+                i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &reg62, 1, &val62, 1, 100);
+                if (val62 != 0x13) { // Force 1.0A
+                    uint8_t write62[2] = {0x62, 0x13};
+                    i2c_master_write_to_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, write62, 2, 100);
+                }
+
+                // 3. TELEMETRY: Read PMU_STATUS (0x00), CHG_STATUS (0x01), E-Gauge (0xA4)
+                uint8_t regs[3] = {0x00, 0x01, 0xA4};
+                uint8_t vals[3] = {0, 0, 0};
+                bool i2c_success = true;
+                
+                for(int i=0; i<3; i++) {
+                    if (i2c_master_write_read_device((i2c_port_t)BSP_I2C_NUM, PMIC_I2C_ADDR, &regs[i], 1, &vals[i], 1, 100) != ESP_OK) {
+                        vals[i] = 0xEE;
+                        i2c_success = false;
+                    }
+                }
+                
+                xSemaphoreGive(pmic_i2c_mutex);
+
+                if (i2c_success) {
+                    if (vals[2] <= 100) global_state.pmic_percentage = (int)vals[2]; // E-Gauge sync
+                    
+                    // X-Ray: Pack Reg 0x00, Reg 0x01, and E-Gauge
+                    uint32_t packed = (vals[0] << 16) | (vals[1] << 8) | vals[2];
+                    global_state.system_temp = (float)packed;
+                    
+                    // True VBUS Valid check (Bit 5 of Reg 0x00)
+                    global_state.is_charging = ((vals[0] & 0x20) != 0); 
+                }
             }
         }
 
-        
         // --- HARDWARE AUDIT & ENFORCEMENT (Every 5 Seconds) ---
         if (tick_count % 50 == 0) {
             uint8_t regs[5] = {PMIC_REG_PMU_STATUS, PMIC_REG_CHG_STATUS, PMIC_REG_VBUS_LIMIT, PMIC_REG_CHG_CTRL, PMIC_REG_CHG_CURRENT};
@@ -159,9 +201,9 @@ void power_manager_task(void *pvParameters) {
             ESP_LOGI(TAG, "PMIC AUDIT | Bat: %d%% | VBUS: 0x%02X | ChgCtrl: 0x%02X | ChgCur: 0x%02X | PMU Stat: 0x%02X | Chg Stat: 0x%02X", global_state.pmic_percentage, vals[2], vals[3], vals[4], vals[0], vals[1]);
 
             // VBUS Limit Check (1.5A) OR Charge Current Check (1.0A = 0x1B)
-            if (((vals[2] & 0x07) != 0x04) || (vals[4] != 0x1B)) {
+            if (((vals[2] & 0x07) != 0x01) || (vals[4] != 0x1B)) { // ARCHITECT FIX: Audit for 500mA
                 ESP_LOGW(TAG, "Hardware override dropped! Re-opening charging floodgates...");
-                open_charging_floodgates();
+                // open_charging_floodgates(); // ARCHITECT FIX: Chesterton's Fence. Let the AXP2101 manage itself.
             }
         }
 
